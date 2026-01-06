@@ -1,9 +1,10 @@
 use crate::game::PokerGame;
 use log::{debug, error};
+use parking_lot::Mutex;
 use poker_protocol::{ChatMessage, ClientMessage, PlayerUpdate, ServerMessage};
 use poker_protocol::{ServerError, ServerResult};
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::Arc;
 use tokio::sync::broadcast;
 use tokio::sync::mpsc::Sender;
 
@@ -11,12 +12,12 @@ pub type PlayerId = String;
 
 fn lock_server<'a>(
     server: &'a Arc<Mutex<PokerServer>>,
-) -> ServerResult<MutexGuard<'a, PokerServer>> {
-    server.lock().map_err(|_| ServerError::LockFailed)
+) -> parking_lot::MutexGuard<'a, PokerServer> {
+    server.lock()
 }
 
-fn lock_game<'a>(game: &'a Arc<Mutex<PokerGame>>) -> ServerResult<MutexGuard<'a, PokerGame>> {
-    game.lock().map_err(|_| ServerError::LockFailed)
+fn lock_game<'a>(game: &'a Arc<Mutex<PokerGame>>) -> parking_lot::MutexGuard<'a, PokerGame> {
+    game.lock()
 }
 
 #[derive(Debug, Clone)]
@@ -115,7 +116,7 @@ impl PokerServer {
         self.player_sessions
             .insert(player_id.to_string(), game_id.to_string());
 
-        let mut poker_game = lock_game(game)?;
+        let mut poker_game = lock_game(game);
 
         poker_game.add_player(player_id.to_string(), player.name.clone(), player.chips);
 
@@ -136,7 +137,7 @@ impl PokerServer {
             .games
             .get(game_id)
             .ok_or(ServerError::GameNotFound(game_id.to_string()))?;
-        let poker_game = lock_game(game)?;
+        let poker_game = lock_game(game);
 
         let players: Vec<PlayerUpdate> = poker_game
             .players
@@ -190,7 +191,7 @@ impl PokerServer {
                     .clone();
 
                 if let Some(game) = self.games.get(&session) {
-                    let mut poker_game = lock_game(game)?;
+                    let mut poker_game = lock_game(game);
                     poker_game.handle_action(player_id, action)?;
                 }
             }
@@ -217,7 +218,7 @@ impl PokerServer {
                     .clone();
 
                 if let Some(game) = self.games.get(&session) {
-                    let mut poker_game = lock_game(game)?;
+                    let mut poker_game = lock_game(game);
                     poker_game.sit_out(player_id);
                 }
             }
@@ -229,7 +230,7 @@ impl PokerServer {
                     .clone();
 
                 if let Some(game) = self.games.get(&session) {
-                    let mut poker_game = lock_game(game)?;
+                    let mut poker_game = lock_game(game);
                     poker_game.return_to_game(player_id);
                 }
             }
@@ -239,56 +240,52 @@ impl PokerServer {
     }
 
     pub fn broadcast_to_game(&self, game_id: &str, message: ServerMessage) {
-        let json = serde_json::to_string(&message)
-            .map_err(|e| {
+        let json = match serde_json::to_string(&message) {
+            Ok(json) => json,
+            Err(e) => {
                 error!("Failed to serialize message: {}", e);
-                e
-            })
-            .unwrap_or_default();
+                return;
+            }
+        };
         debug!(
             "Broadcasting to game {}: {} (len={})",
             game_id,
             json,
             json.len()
         );
+        let json = Arc::new(json);
         let game = self.games.get(game_id);
         if let Some(game) = game {
-            let poker_game = lock_game(game);
-            match poker_game {
-                Ok(pg) => {
-                    let players = pg.get_players();
-                    debug!("Game has {} players", players.len());
-                    for player_id in players.keys() {
-                        debug!("Checking player {}", player_id);
-                        if let Some(player) = self.players.get(player_id) {
-                            if player.connected {
-                                if let Some(ref sender) = player.ws_sender {
-                                    debug!(
-                                        "Sending to player {}: {} (len={})",
-                                        player_id,
-                                        json,
-                                        json.len()
-                                    );
-                                    let sender = sender.clone();
-                                    let send_json = json.clone();
-                                    tokio::spawn(async move {
-                                        if let Err(e) = sender.send(send_json).await {
-                                            debug!("Failed to send to player: {}", e);
-                                        }
-                                    });
-                                } else {
-                                    debug!("Player {} has no sender", player_id);
+            let pg = lock_game(game);
+            let players = pg.get_players();
+            debug!("Game has {} players", players.len());
+            let json = Arc::clone(&json);
+            for player_id in players.keys() {
+                debug!("Checking player {}", player_id);
+                if let Some(player) = self.players.get(player_id) {
+                    if player.connected {
+                        if let Some(ref sender) = player.ws_sender {
+                            debug!(
+                                "Sending to player {}: {} (len={})",
+                                player_id,
+                                json,
+                                json.len()
+                            );
+                            let sender = sender.clone();
+                            let send_json = Arc::clone(&json);
+                            tokio::spawn(async move {
+                                if let Err(e) = sender.send(send_json.as_str().to_string()).await {
+                                    debug!("Failed to send to player: {}", e);
                                 }
-                            } else {
-                                debug!("Player {} is not connected", player_id);
-                            }
+                            });
                         } else {
-                            debug!("Player {} not found in players map", player_id);
+                            debug!("Player {} has no sender", player_id);
                         }
+                    } else {
+                        debug!("Player {} is not connected", player_id);
                     }
-                }
-                Err(e) => {
-                    error!("Failed to lock game {}: {}", game_id, e);
+                } else {
+                    debug!("Player {} not found in players map", player_id);
                 }
             }
         } else {

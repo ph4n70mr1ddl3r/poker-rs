@@ -5,7 +5,6 @@ use futures::StreamExt;
 use std::env;
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
-use std::thread;
 use tokio::runtime::Runtime;
 use tokio::time::{timeout, Duration};
 use tokio_tungstenite::tungstenite::Message;
@@ -44,12 +43,6 @@ struct AppState {
 
 impl Default for AppState {
     fn default() -> Self {
-        let args: Vec<String> = env::args().collect();
-        let client_name = if args.len() > 1 {
-            args[1].clone()
-        } else {
-            "Client".to_string()
-        };
         Self {
             game_state: PokerGameState::new(),
             connected: false,
@@ -126,42 +119,43 @@ fn setup_network(mut commands: Commands, server_config: Res<ServerConfig>) {
     let rx_arc = Arc::new(Mutex::new(rx));
     let server_addr = server_config.address.clone();
 
-    thread::spawn(move || {
-        rt.block_on(async {
-            info!("Attempting to connect to {}...", server_addr);
+    rt.spawn(async move {
+        info!("Attempting to connect to {}...", server_addr);
 
-            let connection_result = timeout(
-                Duration::from_secs(CONNECTION_TIMEOUT_SECS),
-                tokio_tungstenite::connect_async(&server_addr),
-            )
-            .await;
+        let connection_result = timeout(
+            Duration::from_secs(CONNECTION_TIMEOUT_SECS),
+            tokio_tungstenite::connect_async(&server_addr),
+        )
+        .await;
 
-            match connection_result {
-                Ok(Ok((ws_stream, _))) => {
-                    info!("WebSocket handshake successful!");
+        match connection_result {
+            Ok(Ok((ws_stream, _))) => {
+                info!("WebSocket handshake successful!");
 
-                    let (mut write, mut read) = ws_stream.split();
+                let (mut write, read) = ws_stream.split();
 
-                    let player_id = format!("player_{}", rand::random::<u32>());
-                    let send_result =
-                        tx_for_network.send(ClientNetworkMessage::Connected(player_id.clone()));
-                    info!("Sent Connected message: {:?}", send_result);
+                let player_id = format!("player_{}", rand::random::<u32>());
+                let send_result =
+                    tx_for_network.send(ClientNetworkMessage::Connected(player_id.clone()));
+                info!("Sent Connected message: {:?}", send_result);
 
-                    let connect_msg = serde_json::json!({
-                        "type": "connect",
-                        "player_id": player_id
-                    });
-                    info!("Sending connect message: {}", connect_msg);
-                    let _ = write.send(Message::Text(connect_msg.to_string())).await;
+                let connect_msg = serde_json::json!({
+                    "type": "connect",
+                    "player_id": player_id
+                });
+                info!("Sending connect message: {}", connect_msg);
+                let _ = write.send(Message::Text(connect_msg.to_string())).await;
 
-                    let write_task = tokio::spawn(async move {
-                        let mut write = write;
-                        while let Ok(msg) = ui_rx.recv() {
-                            info!("Sending to server: {}", msg);
-                            let _ = write.send(Message::Text(msg)).await;
-                        }
-                    });
+                let (write_tx, mut write_rx) = tokio::sync::mpsc::channel::<String>(100);
+                let write_task = tokio::spawn(async move {
+                    while let Some(msg) = write_rx.recv().await {
+                        info!("Sending to server: {}", msg);
+                        let _ = write.send(Message::Text(msg)).await;
+                    }
+                });
 
+                let read_task = tokio::spawn(async move {
+                    let mut read = read;
                     while let Some(result) = read.next().await {
                         match result {
                             Ok(Message::Text(text)) => {
@@ -186,28 +180,36 @@ fn setup_network(mut commands: Commands, server_config: Res<ServerConfig>) {
                             _ => {}
                         }
                     }
+                });
 
-                    write_task.abort();
-                }
-                Ok(Err(e)) => {
-                    error!("Failed to connect to server: {}", e);
-                    let _ = tx_for_network.send(ClientNetworkMessage::Error(format!(
-                        "Connection failed: {}",
-                        e
-                    )));
-                }
-                Err(_) => {
-                    error!(
-                        "Connection timed out after {} seconds",
-                        CONNECTION_TIMEOUT_SECS
-                    );
-                    let _ = tx_for_network.send(ClientNetworkMessage::Error(format!(
-                        "Connection timed out after {} seconds",
-                        CONNECTION_TIMEOUT_SECS
-                    )));
-                }
+                let ui_rx = ui_rx;
+                let write_tx = write_tx;
+                let forward_task = tokio::spawn(async move {
+                    while let Ok(msg) = ui_rx.recv() {
+                        let _ = write_tx.send(msg).await;
+                    }
+                });
+
+                let _ = tokio::join!(read_task, write_task, forward_task);
             }
-        });
+            Ok(Err(e)) => {
+                error!("Failed to connect to server: {}", e);
+                let _ = tx_for_network.send(ClientNetworkMessage::Error(format!(
+                    "Connection failed: {}",
+                    e
+                )));
+            }
+            Err(_) => {
+                error!(
+                    "Connection timed out after {} seconds",
+                    CONNECTION_TIMEOUT_SECS
+                );
+                let _ = tx_for_network.send(ClientNetworkMessage::Error(format!(
+                    "Connection timed out after {} seconds",
+                    CONNECTION_TIMEOUT_SECS
+                )));
+            }
+        }
     });
 
     commands.insert_resource(NetworkResources { rx: rx_arc, ui_tx });
@@ -303,7 +305,7 @@ fn handle_network_messages(mut app_state: ResMut<AppState>, network_res: Res<Net
 
 fn update_ui(
     mut contexts: EguiContexts,
-    mut app_state: ResMut<AppState>,
+    app_state: ResMut<AppState>,
     network_res: Res<NetworkResources>,
 ) {
     let ctx = contexts.ctx_mut();

@@ -426,7 +426,7 @@ impl PokerGame {
         Ok(())
     }
 
-    fn all_players_acteds(&self) -> bool {
+    fn all_players_acted(&self) -> bool {
         self.players
             .values()
             .filter(|p| !p.is_folded && !p.is_all_in)
@@ -449,7 +449,7 @@ impl PokerGame {
     }
 
     fn should_advance_street(&self) -> bool {
-        self.all_players_acteds() && self.bets_equalized()
+        self.all_players_acted() && self.bets_equalized()
     }
 
     fn advance_action(&mut self) {
@@ -539,6 +539,11 @@ impl PokerGame {
 
         let winner_ids: Vec<String> = winners.iter().map(|p| p.id.clone()).collect();
         let winner_count = winners.len() as i32;
+
+        if winner_count == 0 {
+            self.end_hand();
+            return;
+        }
 
         let showdown_update = ShowdownUpdate {
             community_cards: self.community_cards.iter().map(|c| c.to_string()).collect(),

@@ -21,28 +21,34 @@ pub enum PlayerAction {
 }
 
 impl PlayerAction {
-    pub fn from_str(s: &str) -> Option<Self> {
-        match s {
-            "Fold" => Some(PlayerAction::Fold),
-            "Check" => Some(PlayerAction::Check),
-            "Call" => Some(PlayerAction::Call),
-            "AllIn" => Some(PlayerAction::AllIn),
-            _ => None,
+    pub fn from_value(value: &serde_json::Value) -> Option<Self> {
+        if let Some(action_str) = value.as_str() {
+            match action_str {
+                "Fold" => Some(PlayerAction::Fold),
+                "Check" => Some(PlayerAction::Check),
+                "Call" => Some(PlayerAction::Call),
+                "AllIn" => Some(PlayerAction::AllIn),
+                _ => None,
+            }
+        } else if let Some(bet_amount) = value.get("Bet").and_then(|v| v.as_i64()) {
+            if bet_amount > 0 {
+                Some(PlayerAction::Bet(bet_amount as i32))
+            } else {
+                None
+            }
+        } else if let Some(raise_amount) = value.get("Raise").and_then(|v| v.as_i64()) {
+            if raise_amount > 0 {
+                Some(PlayerAction::Raise(raise_amount as i32))
+            } else {
+                None
+            }
+        } else {
+            None
         }
     }
 
-    pub fn from_json_value(value: &serde_json::Value) -> Option<Self> {
-        if let Some(bet_amount) = value.get("Bet").and_then(|v| v.as_i64()) {
-            if bet_amount > 0 {
-                return Some(PlayerAction::Bet(bet_amount as i32));
-            }
-        }
-        if let Some(raise_amount) = value.get("Raise").and_then(|v| v.as_i64()) {
-            if raise_amount > 0 {
-                return Some(PlayerAction::Raise(raise_amount as i32));
-            }
-        }
-        None
+    pub fn from_str(s: &str) -> Option<Self> {
+        Self::from_value(&serde_json::json!(s))
     }
 }
 

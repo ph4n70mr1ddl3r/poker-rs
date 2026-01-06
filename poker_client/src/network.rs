@@ -17,18 +17,17 @@ pub enum NetworkMessage {
     Error(String),
 }
 
-pub fn parse_message(text: &str) -> Result<NetworkMessage, serde_json::Error> {
-    if let Ok(value) = serde_json::from_str::<serde_json::Value>(text) {
-        if let Some(type_obj) = value.get("type") {
-            if let Some(type_str) = type_obj.as_str() {
-                return parse_by_type(type_str, &value);
-            }
-        }
+pub fn parse_message(text: &str) -> Result<NetworkMessage, String> {
+    let value: serde_json::Value =
+        serde_json::from_str(text).map_err(|e| format!("Failed to parse JSON: {}", e))?;
 
-        Ok(NetworkMessage::Error("Unknown message format".to_string()))
-    } else {
-        Ok(NetworkMessage::Error("Failed to parse JSON".to_string()))
+    if let Some(type_obj) = value.get("type") {
+        if let Some(type_str) = type_obj.as_str() {
+            return parse_by_type(type_str, &value).map_err(|e| format!("Parse error: {}", e));
+        }
     }
+
+    Ok(NetworkMessage::Error("Unknown message format".to_string()))
 }
 
 fn parse_by_type(
@@ -189,14 +188,9 @@ mod tests {
     fn test_parse_invalid_json() {
         let json = "not valid json";
         let result = parse_message(json);
-        assert!(result.is_ok());
-        let msg = result.unwrap();
-        match msg {
-            NetworkMessage::Error(err) => {
-                assert!(err.contains("Failed to parse JSON"));
-            }
-            _ => panic!("Expected Error"),
-        }
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.contains("Failed to parse JSON"));
     }
 
     #[test]
