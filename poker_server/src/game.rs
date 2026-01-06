@@ -1,7 +1,7 @@
 use poker_protocol::{
     ActionRequiredUpdate, Card, GameStage, GameStateUpdate, HandEvaluation, HandRank, PlayerAction,
-    PlayerConnectedUpdate, PlayerState, PlayerUpdate, Rank, ServerMessage, ShowdownUpdate, Street,
-    Suit,
+    PlayerConnectedUpdate, PlayerState, PlayerUpdate, Rank, ServerError, ServerMessage,
+    ServerResult, ShowdownUpdate, Street, Suit,
 };
 use rand::seq::SliceRandom;
 use rand::thread_rng;
@@ -22,7 +22,6 @@ pub struct PokerGame {
     dealer_position: usize,
     current_player_position: usize,
     min_raise: i32,
-    last_aggressor: Option<usize>,
     pub tx: broadcast::Sender<ServerMessage>,
     pub game_stage: GameStage,
     hand_number: i32,
@@ -48,7 +47,6 @@ impl PokerGame {
             dealer_position: 0,
             current_player_position: 0,
             min_raise: big_blind * 2,
-            last_aggressor: None,
             tx,
             game_stage: GameStage::WaitingForPlayers,
             hand_number: 0,
@@ -193,20 +191,6 @@ impl PokerGame {
             .collect()
     }
 
-    fn get_next_active_player(&self, from_position: usize) -> Option<usize> {
-        let active_positions = self.get_active_player_positions();
-        if active_positions.is_empty() {
-            return None;
-        }
-        for i in 1..=active_positions.len() {
-            let next_pos = (from_position + i) % active_positions.len();
-            if let Some(&pos) = active_positions.get(next_pos) {
-                return Some(pos);
-            }
-        }
-        None
-    }
-
     fn start_hand(&mut self) {
         self.hand_number += 1;
         self.create_deck();
@@ -335,16 +319,21 @@ impl PokerGame {
         }
     }
 
-    pub fn handle_action(&mut self, player_id: &str, action: PlayerAction) -> Result<(), String> {
-        let current_player = self.get_player_to_act().ok_or("No player to act")?;
+    pub fn handle_action(&mut self, player_id: &str, action: PlayerAction) -> ServerResult<()> {
+        let current_player = self
+            .get_player_to_act()
+            .ok_or_else(|| ServerError::GameState("No player to act".to_string()))?;
 
         if current_player.id != player_id {
-            return Err("Not your turn".to_string());
+            return Err(ServerError::NotYourTurn);
         }
 
         let current_bet = self.get_current_bet();
 
-        let player = self.players.get_mut(player_id).ok_or("Player not found")?;
+        let player = self
+            .players
+            .get_mut(player_id)
+            .ok_or_else(|| ServerError::PlayerNotFound(player_id.to_string()))?;
         let player_call_amount = current_bet - player.current_bet;
 
         match action {
@@ -354,7 +343,7 @@ impl PokerGame {
             }
             PlayerAction::Check => {
                 if player_call_amount > 0 {
-                    return Err("Cannot check, must call".to_string());
+                    return Err(ServerError::CannotCheck);
                 }
                 player.has_acted = true;
             }
@@ -371,16 +360,13 @@ impl PokerGame {
             }
             PlayerAction::Bet(amount) => {
                 if player_call_amount > 0 {
-                    return Err("Cannot bet, must call or raise".to_string());
+                    return Err(ServerError::CannotBet);
                 }
                 if amount > player.chips {
-                    return Err(format!(
-                        "Bet amount {} exceeds your chips ({})",
-                        amount, player.chips
-                    ));
+                    return Err(ServerError::BetExceedsChips(amount, player.chips));
                 }
                 if amount < self.min_raise && player.chips > self.min_raise {
-                    return Err(format!("Minimum bet is {}", self.min_raise));
+                    return Err(ServerError::MinBet(self.min_raise));
                 }
 
                 let bet_amount = amount;
@@ -397,14 +383,14 @@ impl PokerGame {
             PlayerAction::Raise(amount) => {
                 let total_bet = current_bet + amount;
                 if total_bet < self.min_raise {
-                    return Err(format!("Minimum raise is to {}", self.min_raise));
+                    return Err(ServerError::MinRaise(self.min_raise));
                 }
 
                 let required_chips = total_bet - player.current_bet;
                 if required_chips > player.chips {
-                    return Err(format!(
-                        "Raise requires {} more chips, but you only have {}",
-                        required_chips, player.chips
+                    return Err(ServerError::RaiseInsufficientChips(
+                        required_chips,
+                        player.chips,
                     ));
                 }
 
@@ -440,6 +426,32 @@ impl PokerGame {
         Ok(())
     }
 
+    fn all_players_acteds(&self) -> bool {
+        self.players
+            .values()
+            .filter(|p| !p.is_folded && !p.is_all_in)
+            .all(|p| p.has_acted)
+    }
+
+    fn bets_equalized(&self) -> bool {
+        let active_players: Vec<_> = self.players.values().filter(|p| !p.is_folded).collect();
+        if active_players.is_empty() {
+            return true;
+        }
+        let target_bet = active_players
+            .iter()
+            .map(|p| p.current_bet)
+            .max()
+            .unwrap_or(0);
+        active_players
+            .iter()
+            .all(|p| p.current_bet == target_bet || p.is_all_in)
+    }
+
+    fn should_advance_street(&self) -> bool {
+        self.all_players_acteds() && self.bets_equalized()
+    }
+
     fn advance_action(&mut self) {
         let active_positions = self.get_active_player_positions();
         if active_positions.is_empty() {
@@ -457,39 +469,39 @@ impl PokerGame {
             self.current_player_position = active_positions[0];
         }
 
-        self.request_action();
-    }
-
-    fn advance_street(&mut self) {
         for player in self.players.values_mut() {
             player.has_acted = false;
         }
 
-        match self.current_street {
-            Street::Preflop => {
-                self.current_street = Street::Flop;
-                self.deal_community_cards(3);
+        if self.current_street != Street::Showdown && self.should_advance_street() {
+            match self.current_street {
+                Street::Preflop => {
+                    self.current_street = Street::Flop;
+                    self.deal_community_cards(3);
+                }
+                Street::Flop => {
+                    self.current_street = Street::Turn;
+                    self.deal_community_cards(1);
+                }
+                Street::Turn => {
+                    self.current_street = Street::River;
+                    self.deal_community_cards(1);
+                }
+                Street::River => {
+                    self.current_street = Street::Showdown;
+                    self.showdown();
+                    return;
+                }
+                Street::Showdown => {
+                    return;
+                }
             }
-            Street::Flop => {
-                self.current_street = Street::Turn;
-                self.deal_community_cards(1);
-            }
-            Street::Turn => {
-                self.current_street = Street::River;
-                self.deal_community_cards(1);
-            }
-            Street::River => {
-                self.current_street = Street::Showdown;
-                self.showdown();
-                return;
-            }
-            Street::Showdown => {
-                return;
-            }
-        }
 
-        self.broadcast_game_state();
-        self.request_action();
+            self.broadcast_game_state();
+            self.request_action();
+        } else {
+            self.request_action();
+        }
     }
 
     fn deal_community_cards(&mut self, count: usize) {

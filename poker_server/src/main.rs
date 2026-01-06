@@ -5,16 +5,19 @@ use crate::server::PokerServer;
 use futures::stream::StreamExt;
 use futures::SinkExt;
 use log::{debug, error, info, warn};
-use poker_protocol::{ClientMessage, ServerMessage};
+use poker_protocol::{ClientMessage, ServerMessage, ServerResult};
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 use tokio::net::TcpListener;
+use tokio::signal;
 use tokio_tungstenite::accept_async;
 use tokio_tungstenite::tungstenite::Message;
 use uuid::Uuid;
 
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
+
+pub const SHUTDOWN_TIMEOUT_SECS: u64 = 5;
 
 struct RateLimiter {
     messages: AtomicU64,
@@ -24,6 +27,7 @@ struct RateLimiter {
 impl RateLimiter {
     const MAX_MESSAGES: u64 = 100;
     const WINDOW_MS: u64 = 1000;
+    const YIELD_THRESHOLD: usize = 10;
 
     fn new() -> Self {
         Self {
@@ -34,6 +38,8 @@ impl RateLimiter {
 
     fn allow(&self) -> bool {
         let now_ms = Instant::now().elapsed().as_millis() as u64;
+        let mut spin_count = 0;
+
         loop {
             let window_start = self.window_start.load(Ordering::Relaxed);
             let elapsed = now_ms.saturating_sub(window_start);
@@ -59,6 +65,11 @@ impl RateLimiter {
                 .is_ok()
             {
                 return true;
+            }
+
+            spin_count += 1;
+            if spin_count >= Self::YIELD_THRESHOLD {
+                std::hint::spin_loop();
             }
         }
     }
@@ -89,14 +100,68 @@ const STARTING_CHIPS: i32 = 1000;
 const DEFAULT_SMALL_BLIND: i32 = 5;
 const DEFAULT_BIG_BLIND: i32 = 10;
 const CHANNEL_CAPACITY: usize = 100;
-const CONNECTION_TIMEOUT_MS: u64 = 30000;
 const INACTIVITY_TIMEOUT_MS: u64 = 600000;
+
+struct ShutdownState {
+    should_shutdown: Arc<AtomicBool>,
+}
+
+impl Clone for ShutdownState {
+    fn clone(&self) -> Self {
+        Self {
+            should_shutdown: self.should_shutdown.clone(),
+        }
+    }
+}
+
+impl ShutdownState {
+    fn new() -> Self {
+        Self {
+            should_shutdown: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
+    fn is_shutdown_requested(&self) -> bool {
+        self.should_shutdown.load(Ordering::Relaxed)
+    }
+
+    fn request_shutdown(&self) {
+        self.should_shutdown.store(true, Ordering::Relaxed);
+    }
+}
+
+async fn wait_for_shutdown_signal() {
+    #[cfg(unix)]
+    {
+        let ctrl_c = async {
+            signal::ctrl_c().await.expect("Failed to listen for Ctrl+C");
+        };
+
+        #[allow(deprecated)]
+        let terminate = async {
+            signal::unix::signal(signal::unix::SignalKind::terminate())
+                .expect("Failed to install signal handler")
+                .recv()
+                .await;
+        };
+
+        tokio::select! {
+            _ = ctrl_c => {},
+            _ = terminate => {},
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        signal::ctrl_c().await.expect("Failed to listen for Ctrl+C");
+    }
+}
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     env_logger::init();
 
     let server = Arc::new(Mutex::new(PokerServer::new()));
+    let shutdown_state = ShutdownState::new();
 
     let addr = "127.0.0.1:8080";
     let listener = TcpListener::bind(addr).await?;
@@ -128,8 +193,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     let game_clone = Arc::clone(&game);
-    tokio::spawn(async move {
-        loop {
+    let shutdown_clone = shutdown_state.should_shutdown.clone();
+    let inactivity_task = tokio::spawn(async move {
+        while !shutdown_clone.load(Ordering::Relaxed) {
             tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
             let active_count = {
                 if let Ok(g) = game_clone.lock() {
@@ -149,13 +215,39 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
-    while let Ok((stream, addr)) = listener.accept().await {
+    let shutdown_flag = shutdown_state.should_shutdown.clone();
+
+    let signal_task = tokio::spawn(async move {
+        wait_for_shutdown_signal().await;
+        shutdown_flag.store(true, Ordering::Relaxed);
+    });
+
+    let mut active_connections: Vec<tokio::task::JoinHandle<()>> = Vec::new();
+
+    while !shutdown_state.is_shutdown_requested() {
+        let result = listener.accept().await;
+
+        let (stream, addr) = match result {
+            Ok((stream, addr)) => (stream, addr),
+            Err(e) => {
+                if !shutdown_state.is_shutdown_requested() {
+                    error!("Failed to accept connection: {}", e);
+                }
+                continue;
+            }
+        };
+
         info!("New client connected: {}", addr);
 
         let server = Arc::clone(&server);
         let player_id = Uuid::new_v4().to_string();
+        let shutdown_flag = shutdown_state.should_shutdown.clone();
 
-        tokio::spawn(async move {
+        let handle = tokio::spawn(async move {
+            if shutdown_flag.load(Ordering::Relaxed) {
+                return;
+            }
+
             if let Err(e) =
                 handle_connection(stream, addr, Arc::clone(&server), player_id.clone()).await
             {
@@ -166,9 +258,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 s.disconnect_player(&player_id);
             }
         });
+
+        active_connections.push(handle);
     }
 
-    broadcast_task.await?;
+    info!("Shutdown signal received, initiating graceful shutdown...");
+
+    info!("Waiting for active connections to finish...");
+    let shutdown_deadline = Instant::now() + Duration::from_secs(SHUTDOWN_TIMEOUT_SECS);
+
+    for handle in active_connections {
+        if Instant::now() >= shutdown_deadline {
+            warn!("Shutdown timeout reached, forcing close of remaining connections");
+            break;
+        }
+        let _ = tokio::time::timeout(Duration::from_secs(2), handle).await;
+    }
+
+    info!("Shutting down broadcast task...");
+    drop(broadcast_task);
+    let _ = inactivity_task.abort();
+
+    info!("Server shutdown complete");
     Ok(())
 }
 
@@ -289,7 +400,7 @@ async fn handle_connection(
                                                 &player_id_clone,
                                                 ClientMessage::Connect,
                                             ) {
-                                                let error_msg = ServerMessage::Error(e);
+                                                let error_msg = ServerMessage::Error(e.to_string());
                                                 if let Ok(json) = serde_json::to_string(&error_msg)
                                                 {
                                                     server.send_to_player(&player_id_clone, json);
@@ -314,7 +425,30 @@ async fn handle_connection(
                                                         &player_id_clone,
                                                         ClientMessage::Action(action),
                                                     ) {
-                                                        let error_msg = ServerMessage::Error(e);
+                                                        let error_msg =
+                                                            ServerMessage::Error(e.to_string());
+                                                        if let Ok(json) =
+                                                            serde_json::to_string(&error_msg)
+                                                        {
+                                                            server.send_to_player(
+                                                                &player_id_clone,
+                                                                json,
+                                                            );
+                                                        }
+                                                    }
+                                                }
+                                            } else if let Some(action) =
+                                                poker_protocol::PlayerAction::from_json_value(
+                                                    &value["action"],
+                                                )
+                                            {
+                                                if let Ok(mut server) = server_for_read.lock() {
+                                                    if let Err(e) = server.handle_message(
+                                                        &player_id_clone,
+                                                        ClientMessage::Action(action),
+                                                    ) {
+                                                        let error_msg =
+                                                            ServerMessage::Error(e.to_string());
                                                         if let Ok(json) =
                                                             serde_json::to_string(&error_msg)
                                                         {
@@ -352,7 +486,8 @@ async fn handle_connection(
                                                                 ),
                                                             ),
                                                         ) {
-                                                            let error_msg = ServerMessage::Error(e);
+                                                            let error_msg =
+                                                                ServerMessage::Error(e.to_string());
                                                             if let Ok(json) =
                                                                 serde_json::to_string(&error_msg)
                                                             {
@@ -404,7 +539,8 @@ async fn handle_connection(
                                                                 ),
                                                             ),
                                                         ) {
-                                                            let error_msg = ServerMessage::Error(e);
+                                                            let error_msg =
+                                                                ServerMessage::Error(e.to_string());
                                                             if let Ok(json) =
                                                                 serde_json::to_string(&error_msg)
                                                             {
@@ -442,7 +578,8 @@ async fn handle_connection(
                                                     &player_id_clone,
                                                     ClientMessage::Chat(sanitized_text),
                                                 ) {
-                                                    let error_msg = ServerMessage::Error(e);
+                                                    let error_msg =
+                                                        ServerMessage::Error(e.to_string());
                                                     if let Ok(json) =
                                                         serde_json::to_string(&error_msg)
                                                     {
@@ -459,7 +596,7 @@ async fn handle_connection(
                                                 &player_id_clone,
                                                 ClientMessage::SitOut,
                                             ) {
-                                                let error_msg = ServerMessage::Error(e);
+                                                let error_msg = ServerMessage::Error(e.to_string());
                                                 if let Ok(json) = serde_json::to_string(&error_msg)
                                                 {
                                                     server.send_to_player(&player_id_clone, json);
@@ -473,7 +610,7 @@ async fn handle_connection(
                                                 &player_id_clone,
                                                 ClientMessage::Return,
                                             ) {
-                                                let error_msg = ServerMessage::Error(e);
+                                                let error_msg = ServerMessage::Error(e.to_string());
                                                 if let Ok(json) = serde_json::to_string(&error_msg)
                                                 {
                                                     server.send_to_player(&player_id_clone, json);
@@ -490,7 +627,7 @@ async fn handle_connection(
                     } else if let Ok(client_msg) = serde_json::from_str::<ClientMessage>(&text) {
                         if let Ok(mut server) = server_for_read.lock() {
                             if let Err(e) = server.handle_message(&player_id_clone, client_msg) {
-                                let error_msg = ServerMessage::Error(e);
+                                let error_msg = ServerMessage::Error(e.to_string());
                                 if let Ok(json) = serde_json::to_string(&error_msg) {
                                     server.send_to_player(&player_id_clone, json);
                                 }

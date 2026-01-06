@@ -1,12 +1,23 @@
 use crate::game::PokerGame;
 use log::{debug, error};
 use poker_protocol::{ChatMessage, ClientMessage, PlayerUpdate, ServerMessage};
+use poker_protocol::{ServerError, ServerResult};
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard};
 use tokio::sync::broadcast;
 use tokio::sync::mpsc::Sender;
 
 pub type PlayerId = String;
+
+fn lock_server<'a>(
+    server: &'a Arc<Mutex<PokerServer>>,
+) -> ServerResult<MutexGuard<'a, PokerServer>> {
+    server.lock().map_err(|_| ServerError::LockFailed)
+}
+
+fn lock_game<'a>(game: &'a Arc<Mutex<PokerGame>>) -> ServerResult<MutexGuard<'a, PokerGame>> {
+    game.lock().map_err(|_| ServerError::LockFailed)
+}
 
 #[derive(Debug, Clone)]
 pub struct ServerPlayer {
@@ -81,13 +92,19 @@ impl PokerServer {
         }
     }
 
-    pub fn seat_player(&mut self, player_id: &str, game_id: &str) -> Result<(), String> {
-        let player = self.players.get_mut(player_id).ok_or("Player not found")?;
+    pub fn seat_player(&mut self, player_id: &str, game_id: &str) -> ServerResult<()> {
+        let player = self
+            .players
+            .get_mut(player_id)
+            .ok_or(ServerError::PlayerNotFound(player_id.to_string()))?;
 
-        let game = self.games.get(game_id).ok_or("Game not found")?;
+        let game = self
+            .games
+            .get(game_id)
+            .ok_or(ServerError::GameNotFound(game_id.to_string()))?;
 
         if player.chips <= 0 {
-            return Err("Player has no chips".to_string());
+            return Err(ServerError::NoChips);
         }
 
         if self.player_sessions.contains_key(player_id) {
@@ -98,14 +115,15 @@ impl PokerServer {
         self.player_sessions
             .insert(player_id.to_string(), game_id.to_string());
 
-        let mut poker_game = game.lock().map_err(|_| "Failed to lock game")?;
+        let mut poker_game = lock_game(game)?;
 
         poker_game.add_player(player_id.to_string(), player.name.clone(), player.chips);
 
         drop(poker_game);
 
         let connected_msg = ServerMessage::Connected(player_id.to_string());
-        let json = serde_json::to_string(&connected_msg).map_err(|e| e.to_string())?;
+        let json = serde_json::to_string(&connected_msg)
+            .map_err(|e| ServerError::GameState(e.to_string()))?;
         self.send_to_player(player_id, json);
 
         self.send_game_state_to_player(player_id, game_id)?;
@@ -113,9 +131,12 @@ impl PokerServer {
         Ok(())
     }
 
-    fn send_game_state_to_player(&self, player_id: &str, game_id: &str) -> Result<(), String> {
-        let game = self.games.get(game_id).ok_or("Game not found")?;
-        let poker_game = game.lock().map_err(|_| "Failed to lock game")?;
+    fn send_game_state_to_player(&self, player_id: &str, game_id: &str) -> ServerResult<()> {
+        let game = self
+            .games
+            .get(game_id)
+            .ok_or(ServerError::GameNotFound(game_id.to_string()))?;
+        let poker_game = lock_game(game)?;
 
         let players: Vec<PlayerUpdate> = poker_game
             .players
@@ -136,17 +157,14 @@ impl PokerServer {
         drop(poker_game);
 
         let game_state = ServerMessage::PlayerUpdates(players);
-        let json = serde_json::to_string(&game_state).map_err(|e| e.to_string())?;
+        let json = serde_json::to_string(&game_state)
+            .map_err(|e| ServerError::GameState(e.to_string()))?;
         self.send_to_player(player_id, json);
 
         Ok(())
     }
 
-    pub fn handle_message(
-        &mut self,
-        player_id: &str,
-        message: ClientMessage,
-    ) -> Result<(), String> {
+    pub fn handle_message(&mut self, player_id: &str, message: ClientMessage) -> ServerResult<()> {
         match message {
             ClientMessage::Connect => {
                 if self.player_sessions.contains_key(player_id) {
@@ -154,15 +172,25 @@ impl PokerServer {
                 }
                 self.seat_player(player_id, "main_table")?;
             }
+            ClientMessage::Reconnect(existing_player_id) => {
+                if let Some(player) = self.players.get_mut(&existing_player_id) {
+                    player.connected = true;
+                    if let Some(session) = self.player_sessions.get(&existing_player_id) {
+                        self.send_game_state_to_player(&existing_player_id, session)?;
+                    }
+                } else {
+                    return Err(ServerError::PlayerNotFound(existing_player_id));
+                }
+            }
             ClientMessage::Action(action) => {
                 let session = self
                     .player_sessions
                     .get(player_id)
-                    .ok_or("Player not in a game")?
+                    .ok_or(ServerError::PlayerNotInGame)?
                     .clone();
 
                 if let Some(game) = self.games.get(&session) {
-                    let mut poker_game = game.lock().map_err(|_| "Failed to lock game")?;
+                    let mut poker_game = lock_game(game)?;
                     poker_game.handle_action(player_id, action)?;
                 }
             }
@@ -185,11 +213,11 @@ impl PokerServer {
                 let session = self
                     .player_sessions
                     .get(player_id)
-                    .ok_or("Player not in a game")?
+                    .ok_or(ServerError::PlayerNotInGame)?
                     .clone();
 
                 if let Some(game) = self.games.get(&session) {
-                    let mut poker_game = game.lock().map_err(|_| "Failed to lock game")?;
+                    let mut poker_game = lock_game(game)?;
                     poker_game.sit_out(player_id);
                 }
             }
@@ -197,11 +225,11 @@ impl PokerServer {
                 let session = self
                     .player_sessions
                     .get(player_id)
-                    .ok_or("Player not in a game")?
+                    .ok_or(ServerError::PlayerNotInGame)?
                     .clone();
 
                 if let Some(game) = self.games.get(&session) {
-                    let mut poker_game = game.lock().map_err(|_| "Failed to lock game")?;
+                    let mut poker_game = lock_game(game)?;
                     poker_game.return_to_game(player_id);
                 }
             }
@@ -225,7 +253,7 @@ impl PokerServer {
         );
         let game = self.games.get(game_id);
         if let Some(game) = game {
-            let poker_game = game.lock();
+            let poker_game = lock_game(game);
             match poker_game {
                 Ok(pg) => {
                     let players = pg.get_players();

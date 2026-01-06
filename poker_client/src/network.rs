@@ -77,6 +77,14 @@ fn parse_by_type(
                 .to_string();
             Ok(NetworkMessage::PlayerIdConfirmed(player_id))
         }
+        "Reconnect" | "reconnect" => {
+            let player_id = value["player_id"]
+                .as_str()
+                .or(value["id"].as_str())
+                .unwrap_or("unknown")
+                .to_string();
+            Ok(NetworkMessage::PlayerIdConfirmed(player_id))
+        }
         _ => Ok(NetworkMessage::Error(format!(
             "Unknown message type: {}",
             type_str

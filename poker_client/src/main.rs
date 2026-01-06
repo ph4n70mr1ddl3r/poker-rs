@@ -3,73 +3,22 @@ use bevy_egui::{egui, EguiContexts, EguiPlugin};
 use futures::SinkExt;
 use futures::StreamExt;
 use std::env;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::Instant;
 use tokio::runtime::Runtime;
+use tokio::time::{timeout, Duration};
 use tokio_tungstenite::tungstenite::Message;
+
+pub const DEFAULT_SERVER_ADDR: &str = "ws://127.0.0.1:8080";
+pub const ENV_SERVER_ADDR: &str = "POKER_SERVER_URL";
+pub const CONNECTION_TIMEOUT_SECS: u64 = 10;
 
 mod game;
 mod network;
 mod ui;
 
 use game::PokerGameState;
-
-struct ClientRateLimiter {
-    messages: AtomicU64,
-    window_start: AtomicU64,
-}
-
-impl ClientRateLimiter {
-    const MAX_MESSAGES: u64 = 50;
-    const WINDOW_MS: u64 = 1000;
-
-    fn new() -> Self {
-        Self {
-            messages: AtomicU64::new(0),
-            window_start: AtomicU64::new(0),
-        }
-    }
-
-    fn allow(&self) -> bool {
-        let now_ms = Instant::now().elapsed().as_millis() as u64;
-        loop {
-            let window_start = self.window_start.load(Ordering::Relaxed);
-            let elapsed = now_ms.saturating_sub(window_start);
-
-            if elapsed > Self::WINDOW_MS {
-                if self
-                    .window_start
-                    .compare_exchange(window_start, now_ms, Ordering::Relaxed, Ordering::Relaxed)
-                    .is_ok()
-                {
-                    self.messages.store(0, Ordering::Relaxed);
-                }
-            }
-
-            let current = self.messages.load(Ordering::Relaxed);
-            if current >= Self::MAX_MESSAGES {
-                return false;
-            }
-
-            if self
-                .messages
-                .compare_exchange(current, current + 1, Ordering::Relaxed, Ordering::Relaxed)
-                .is_ok()
-            {
-                return true;
-            }
-        }
-    }
-}
-
-impl Default for ClientRateLimiter {
-    fn default() -> Self {
-        Self::new()
-    }
-}
 
 #[derive(Debug, Clone)]
 enum ClientNetworkMessage {
@@ -90,7 +39,6 @@ enum ClientNetworkMessage {
 struct AppState {
     game_state: PokerGameState,
     connected: bool,
-    client_name: String,
     chat_text: String,
 }
 
@@ -105,7 +53,6 @@ impl Default for AppState {
         Self {
             game_state: PokerGameState::new(),
             connected: false,
-            client_name,
             chat_text: String::new(),
         }
     }
@@ -115,7 +62,6 @@ impl Default for AppState {
 struct NetworkResources {
     rx: Arc<Mutex<mpsc::Receiver<ClientNetworkMessage>>>,
     ui_tx: mpsc::Sender<String>,
-    rate_limiter: Arc<ClientRateLimiter>,
 }
 
 fn main() {
@@ -125,6 +71,8 @@ fn main() {
     } else {
         "Poker".to_string()
     };
+
+    let server_addr = get_server_address();
 
     App::new()
         .add_plugins(DefaultPlugins.set(WindowPlugin {
@@ -137,12 +85,31 @@ fn main() {
         }))
         .add_plugins(EguiPlugin)
         .insert_resource(AppState::default())
+        .insert_resource(ServerConfig {
+            address: server_addr,
+        })
         .add_systems(Startup, setup_network)
         .add_systems(Update, (handle_network_messages, update_ui))
         .run();
 }
 
-fn setup_network(mut commands: Commands) {
+fn get_server_address() -> String {
+    env::var(ENV_SERVER_ADDR).unwrap_or_else(|_| {
+        let args: Vec<String> = env::args().collect();
+        if args.len() > 2 {
+            args[2].clone()
+        } else {
+            DEFAULT_SERVER_ADDR.to_string()
+        }
+    })
+}
+
+#[derive(Resource)]
+struct ServerConfig {
+    address: String,
+}
+
+fn setup_network(mut commands: Commands, server_config: Res<ServerConfig>) {
     let rt = match Runtime::new() {
         Ok(rt) => rt,
         Err(e) => {
@@ -157,76 +124,93 @@ fn setup_network(mut commands: Commands) {
 
     let tx_for_network = tx.clone();
     let rx_arc = Arc::new(Mutex::new(rx));
-    let rate_limiter = Arc::new(ClientRateLimiter::new());
+    let server_addr = server_config.address.clone();
 
     thread::spawn(move || {
         rt.block_on(async {
-            info!("Attempting to connect to ws://127.0.0.1:8080...");
+            info!("Attempting to connect to {}...", server_addr);
 
-            if let Ok((ws_stream, _)) =
-                tokio_tungstenite::connect_async("ws://127.0.0.1:8080").await
-            {
-                info!("WebSocket handshake successful!");
+            let connection_result = timeout(
+                Duration::from_secs(CONNECTION_TIMEOUT_SECS),
+                tokio_tungstenite::connect_async(&server_addr),
+            )
+            .await;
 
-                let (mut write, mut read) = ws_stream.split();
+            match connection_result {
+                Ok(Ok((ws_stream, _))) => {
+                    info!("WebSocket handshake successful!");
 
-                let player_id = format!("player_{}", rand::random::<u32>());
-                let send_result =
-                    tx_for_network.send(ClientNetworkMessage::Connected(player_id.clone()));
-                info!("Sent Connected message: {:?}", send_result);
+                    let (mut write, mut read) = ws_stream.split();
 
-                let connect_msg = serde_json::json!({
-                    "type": "connect",
-                    "player_id": player_id
-                });
-                info!("Sending connect message: {}", connect_msg);
-                let _ = write.send(Message::Text(connect_msg.to_string())).await;
+                    let player_id = format!("player_{}", rand::random::<u32>());
+                    let send_result =
+                        tx_for_network.send(ClientNetworkMessage::Connected(player_id.clone()));
+                    info!("Sent Connected message: {:?}", send_result);
 
-                let write_task = tokio::spawn(async move {
-                    let mut write = write;
-                    while let Ok(msg) = ui_rx.recv() {
-                        info!("Sending to server: {}", msg);
-                        let _ = write.send(Message::Text(msg)).await;
-                    }
-                });
+                    let connect_msg = serde_json::json!({
+                        "type": "connect",
+                        "player_id": player_id
+                    });
+                    info!("Sending connect message: {}", connect_msg);
+                    let _ = write.send(Message::Text(connect_msg.to_string())).await;
 
-                while let Some(result) = read.next().await {
-                    match result {
-                        Ok(Message::Text(text)) => {
-                            info!("Received from server: {} bytes", text.len());
-                            if let Ok(server_msg) = crate::network::parse_message(&text) {
-                                info!("Parsed message type");
-                                let client_msg = convert_message(server_msg);
-                                let send_result = tx_for_network.send(client_msg);
-                                info!("Sent to main thread: {:?}", send_result);
+                    let write_task = tokio::spawn(async move {
+                        let mut write = write;
+                        while let Ok(msg) = ui_rx.recv() {
+                            info!("Sending to server: {}", msg);
+                            let _ = write.send(Message::Text(msg)).await;
+                        }
+                    });
+
+                    while let Some(result) = read.next().await {
+                        match result {
+                            Ok(Message::Text(text)) => {
+                                info!("Received from server: {} bytes", text.len());
+                                if let Ok(server_msg) = crate::network::parse_message(&text) {
+                                    info!("Parsed message type");
+                                    let client_msg = convert_message(server_msg);
+                                    let send_result = tx_for_network.send(client_msg);
+                                    info!("Sent to main thread: {:?}", send_result);
+                                }
                             }
+                            Ok(Message::Close(_)) => {
+                                let _ = tx_for_network.send(ClientNetworkMessage::Disconnected);
+                                break;
+                            }
+                            Err(e) => {
+                                error!("WebSocket error: {}", e);
+                                let _ =
+                                    tx_for_network.send(ClientNetworkMessage::Error(e.to_string()));
+                                break;
+                            }
+                            _ => {}
                         }
-                        Ok(Message::Close(_)) => {
-                            let _ = tx_for_network.send(ClientNetworkMessage::Disconnected);
-                            break;
-                        }
-                        Err(e) => {
-                            error!("WebSocket error: {}", e);
-                            let _ = tx_for_network.send(ClientNetworkMessage::Error(e.to_string()));
-                            break;
-                        }
-                        _ => {}
                     }
-                }
 
-                write_task.abort();
-            } else {
-                let _ = tx_for_network
-                    .send(ClientNetworkMessage::Error("Failed to connect".to_string()));
+                    write_task.abort();
+                }
+                Ok(Err(e)) => {
+                    error!("Failed to connect to server: {}", e);
+                    let _ = tx_for_network.send(ClientNetworkMessage::Error(format!(
+                        "Connection failed: {}",
+                        e
+                    )));
+                }
+                Err(_) => {
+                    error!(
+                        "Connection timed out after {} seconds",
+                        CONNECTION_TIMEOUT_SECS
+                    );
+                    let _ = tx_for_network.send(ClientNetworkMessage::Error(format!(
+                        "Connection timed out after {} seconds",
+                        CONNECTION_TIMEOUT_SECS
+                    )));
+                }
             }
         });
     });
 
-    commands.insert_resource(NetworkResources {
-        rx: rx_arc,
-        ui_tx,
-        rate_limiter,
-    });
+    commands.insert_resource(NetworkResources { rx: rx_arc, ui_tx });
 }
 
 fn handle_network_messages(mut app_state: ResMut<AppState>, network_res: Res<NetworkResources>) {
@@ -327,7 +311,6 @@ fn update_ui(
     egui::CentralPanel::default().show(ctx, |ui| {
         ui.set_min_size(egui::Vec2::new(800.0, 600.0));
 
-        // Title bar
         ui.horizontal(|ui| {
             ui.heading("Texas Hold'em Poker");
             ui.add_space(20.0);
@@ -355,13 +338,11 @@ fn update_ui(
         ui.separator();
         ui.add_space(10.0);
 
-        // Calculate table area
         let available = ui.available_rect_before_wrap();
         let table_center = available.center();
         let table_width = available.width() * 0.9;
         let table_height = available.height() * 0.7;
 
-        // Draw green felt table
         let table_rect =
             egui::Rect::from_center_size(table_center, egui::vec2(table_width, table_height));
         ui.painter()
@@ -372,7 +353,6 @@ fn update_ui(
             egui::Stroke::new(6.0, egui::Color32::from_rgb(139, 69, 19)),
         );
 
-        // Community cards in center
         let card_spacing = 50.0;
         let card_size = egui::Vec2::new(45.0, 63.0);
         let cards_start = table_center.x - (card_spacing * 2.0);
@@ -386,7 +366,6 @@ fn update_ui(
             draw_card(ui.painter(), card_rect, card);
         }
 
-        // Pot in center of table
         ui.painter().text(
             egui::pos2(table_center.x, table_center.y + 60.0),
             egui::Align2::CENTER_CENTER,
@@ -395,11 +374,9 @@ fn update_ui(
             egui::Color32::from_rgb(255, 215, 0),
         );
 
-        // Villain (opponent) at top
         let villain_y = table_rect.top() + 40.0;
         let villain_pos = egui::pos2(table_center.x, villain_y);
 
-        // Find villain (not us)
         let mut villain_opt = None;
         let mut hero_opt = None;
         for (id, player) in &app_state.game_state.players {
@@ -411,7 +388,6 @@ fn update_ui(
         }
 
         if let Some(villain) = villain_opt {
-            // Draw villain info
             let villain_rect = egui::Rect::from_center_size(villain_pos, egui::vec2(180.0, 80.0));
             ui.painter()
                 .rect_filled(villain_rect, 8.0, egui::Color32::from_rgb(30, 30, 50));
@@ -436,7 +412,6 @@ fn update_ui(
                 egui::Color32::from_rgb(200, 200, 200),
             );
 
-            // Show villain's cards if showdown
             if !villain.hole_cards.is_empty()
                 && (app_state.game_state.action_required.is_none()
                     || villain.is_folded
@@ -455,7 +430,6 @@ fn update_ui(
                     draw_card(ui.painter(), card2_rect, &villain.hole_cards[1]);
                 }
             } else if villain.hole_cards.is_empty() {
-                // Face down cards
                 let card1_rect = egui::Rect::from_center_size(
                     egui::pos2(villain_pos.x - 30.0, villain_pos.y + 35.0),
                     egui::Vec2::new(35.0, 49.0),
@@ -469,7 +443,6 @@ fn update_ui(
             }
         }
 
-        // Hero (us) at bottom
         if let Some(hero) = hero_opt {
             let hero_y = table_rect.bottom() - 40.0;
             let hero_pos = egui::pos2(table_center.x, hero_y);
@@ -498,7 +471,6 @@ fn update_ui(
                 egui::Color32::from_rgb(200, 200, 200),
             );
 
-            // Hero's hole cards
             if !hero.hole_cards.is_empty() {
                 let card1_rect = egui::Rect::from_center_size(
                     egui::pos2(hero_pos.x - 35.0, hero_pos.y + 35.0),
@@ -515,7 +487,6 @@ fn update_ui(
             }
         }
 
-        // Action panel at bottom
         ui.add_space(ui.available_rect_before_wrap().height() - 100.0);
         ui.separator();
         ui.add_space(10.0);
@@ -546,7 +517,6 @@ fn update_ui(
                             let _ = network_res.ui_tx.send(msg);
                             info!("Sent Fold action");
                         }
-                        // Don't clear action_required here - wait for server response
                     }
 
                     let can_check = action_current_bet == 0;
@@ -603,7 +573,6 @@ fn update_ui(
             ui.label("Waiting for next hand...");
         }
 
-        // Chat on the side
         ui.allocate_ui_at_rect(
             egui::Rect::from_min_size(
                 egui::pos2(available.right() - 200.0, available.top() + 50.0),
@@ -620,7 +589,6 @@ fn update_ui(
             },
         );
 
-        // Error messages
         for error in &app_state.game_state.errors {
             ui.add_space(10.0);
             ui.colored_label(egui::Color32::RED, format!("Error: {}", error));

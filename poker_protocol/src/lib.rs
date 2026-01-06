@@ -1,20 +1,14 @@
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
+mod errors;
 mod types;
 
+pub use errors::{ConnectionError, ProtocolError, ServerError};
 pub use types::{
     Card, GameStage, GameState, HandEvaluation, HandRank, Player, PlayerState, Rank, Street, Suit,
 };
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum ClientMessage {
-    Connect,
-    Action(PlayerAction),
-    Chat(String),
-    SitOut,
-    Return,
-}
+pub type ServerResult<T> = std::result::Result<T, ServerError>;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum PlayerAction {
@@ -36,6 +30,20 @@ impl PlayerAction {
             _ => None,
         }
     }
+
+    pub fn from_json_value(value: &serde_json::Value) -> Option<Self> {
+        if let Some(bet_amount) = value.get("Bet").and_then(|v| v.as_i64()) {
+            if bet_amount > 0 {
+                return Some(PlayerAction::Bet(bet_amount as i32));
+            }
+        }
+        if let Some(raise_amount) = value.get("Raise").and_then(|v| v.as_i64()) {
+            if raise_amount > 0 {
+                return Some(PlayerAction::Raise(raise_amount as i32));
+            }
+        }
+        None
+    }
 }
 
 impl fmt::Display for PlayerAction {
@@ -51,10 +59,21 @@ impl fmt::Display for PlayerAction {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum ClientMessage {
+    Connect,
+    Reconnect(String),
+    Action(PlayerAction),
+    Chat(String),
+    SitOut,
+    Return,
+}
+
 impl fmt::Display for ClientMessage {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
             ClientMessage::Connect => write!(f, "Connect"),
+            ClientMessage::Reconnect(id) => write!(f, "Reconnect({})", id),
             ClientMessage::Action(a) => write!(f, "Action({})", a),
             ClientMessage::Chat(t) => write!(f, "Chat({})", t),
             ClientMessage::SitOut => write!(f, "SitOut"),
@@ -66,6 +85,8 @@ impl fmt::Display for ClientMessage {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ServerMessage {
     Connected(String),
+    Ping(u64),
+    Pong(u64),
     GameStateUpdate(GameStateUpdate),
     PlayerUpdates(Vec<PlayerUpdate>),
     ActionRequired(ActionRequiredUpdate),
