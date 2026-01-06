@@ -1,0 +1,3 @@
+@echo off
+echo Starting poker client...
+cargo run --release

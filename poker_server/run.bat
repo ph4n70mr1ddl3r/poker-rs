@@ -1,0 +1,13 @@
+@echo off
+echo Killing any process using port 8080...
+
+for /f "tokens=5" %%a in ('netstat -ano ^| findstr :8080 ^| findstr LISTENING') do (
+    echo Found process %%a on port 8080, killing it...
+    wmic process where "processid=%%a" delete 2>nul
+)
+
+echo Waiting for port to be freed...
+timeout /t 2 /nobreak >nul
+
+echo Starting poker server...
+cargo run --release
