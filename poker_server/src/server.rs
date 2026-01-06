@@ -10,7 +10,6 @@ pub type PlayerId = String;
 
 #[derive(Debug, Clone)]
 pub struct ServerPlayer {
-    pub id: PlayerId,
     pub name: String,
     pub chips: i32,
     pub connected: bool,
@@ -19,9 +18,8 @@ pub struct ServerPlayer {
 }
 
 impl ServerPlayer {
-    pub fn new(id: PlayerId, name: String, chips: i32) -> Self {
+    pub fn new(_id: PlayerId, name: String, chips: i32) -> Self {
         Self {
-            id,
             name,
             chips,
             connected: false,
@@ -64,10 +62,6 @@ impl PokerServer {
         game
     }
 
-    pub fn get_game(&self, game_id: &str) -> Option<Arc<Mutex<PokerGame>>> {
-        self.games.get(game_id).cloned()
-    }
-
     pub fn register_player(&mut self, player_id: PlayerId, name: String, chips: i32) {
         let player = ServerPlayer::new(player_id.clone(), name, chips);
         self.players.insert(player_id, player);
@@ -92,8 +86,6 @@ impl PokerServer {
 
         let game = self.games.get(game_id).ok_or("Game not found")?;
 
-        let mut poker_game = game.lock().map_err(|_| "Failed to lock game")?;
-
         if player.chips <= 0 {
             return Err("Player has no chips".to_string());
         }
@@ -106,24 +98,25 @@ impl PokerServer {
         self.player_sessions
             .insert(player_id.to_string(), game_id.to_string());
 
+        let mut poker_game = game.lock().map_err(|_| "Failed to lock game")?;
+
         poker_game.add_player(player_id.to_string(), player.name.clone(), player.chips);
 
-        // Send confirmation to the newly connected player
+        drop(poker_game);
+
         let connected_msg = ServerMessage::Connected(player_id.to_string());
         let json = serde_json::to_string(&connected_msg).map_err(|e| e.to_string())?;
         self.send_to_player(player_id, json);
 
-        // Send game state to the newly seated player
-        self.send_game_state_to_player(player_id, &poker_game)?;
+        self.send_game_state_to_player(player_id, game_id)?;
 
         Ok(())
     }
 
-    fn send_game_state_to_player(
-        &self,
-        player_id: &str,
-        poker_game: &PokerGame,
-    ) -> Result<(), String> {
+    fn send_game_state_to_player(&self, player_id: &str, game_id: &str) -> Result<(), String> {
+        let game = self.games.get(game_id).ok_or("Game not found")?;
+        let poker_game = game.lock().map_err(|_| "Failed to lock game")?;
+
         let players: Vec<PlayerUpdate> = poker_game
             .players
             .values()
@@ -139,6 +132,8 @@ impl PokerServer {
                 hole_cards: p.hole_cards.iter().map(|c| c.to_string()).collect(),
             })
             .collect();
+
+        drop(poker_game);
 
         let game_state = ServerMessage::PlayerUpdates(players);
         let json = serde_json::to_string(&game_state).map_err(|e| e.to_string())?;
@@ -182,7 +177,9 @@ impl PokerServer {
                     text,
                     timestamp: chrono::Utc::now().timestamp(),
                 };
-                let _ = self.tx.send(ServerMessage::Chat(chat_msg));
+                if let Err(e) = self.tx.send(ServerMessage::Chat(chat_msg)) {
+                    error!("Failed to send chat message to broadcast channel: {}", e);
+                }
             }
             ClientMessage::SitOut => {
                 let session = self
@@ -280,10 +277,6 @@ impl PokerServer {
                 });
             }
         }
-    }
-
-    pub fn get_player_info(&self, player_id: &str) -> Option<&ServerPlayer> {
-        self.players.get(player_id)
     }
 }
 

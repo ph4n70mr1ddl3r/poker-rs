@@ -260,11 +260,18 @@ impl HandEvaluation {
         ranks.sort();
         ranks.reverse();
 
+        let top_rank = ranks.first().map(|&r| r as i32).unwrap_or(0);
+        let top_rank_display = ranks
+            .first()
+            .and_then(|&r| Rank::from_u8(r))
+            .map(|r| r.to_string())
+            .unwrap_or_else(|| "None".to_string());
+
         Self {
             rank: HandRank::HighCard,
-            primary_rank: ranks.first().map(|&r| r as i32).unwrap_or(0),
+            primary_rank: top_rank,
             tiebreakers: ranks.iter().take(5).map(|&r| r as i32).collect(),
-            description: format!("High Card, {}", Rank::from_u8(ranks[0]).unwrap()),
+            description: format!("High Card, {}", top_rank_display),
         }
     }
 }

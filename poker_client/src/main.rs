@@ -3,7 +3,7 @@ use bevy_egui::{egui, EguiContexts, EguiPlugin};
 use futures::SinkExt;
 use futures::StreamExt;
 use std::env;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -18,33 +18,50 @@ mod ui;
 use game::PokerGameState;
 
 struct ClientRateLimiter {
-    messages: AtomicUsize,
-    window_start: AtomicUsize,
+    messages: AtomicU64,
+    window_start: AtomicU64,
 }
 
 impl ClientRateLimiter {
-    const MAX_MESSAGES: usize = 50;
+    const MAX_MESSAGES: u64 = 50;
     const WINDOW_MS: u64 = 1000;
 
     fn new() -> Self {
         Self {
-            messages: AtomicUsize::new(0),
-            window_start: AtomicUsize::new(0),
+            messages: AtomicU64::new(0),
+            window_start: AtomicU64::new(0),
         }
     }
 
     fn allow(&self) -> bool {
-        let now = Instant::now();
-        let now_ms = now.elapsed().as_millis() as usize;
-        let window_start = self.window_start.load(Ordering::Relaxed);
+        let now_ms = Instant::now().elapsed().as_millis() as u64;
+        loop {
+            let window_start = self.window_start.load(Ordering::Relaxed);
+            let elapsed = now_ms.saturating_sub(window_start);
 
-        if now_ms.saturating_sub(window_start) > Self::WINDOW_MS as usize {
-            self.window_start.store(now_ms, Ordering::Relaxed);
-            self.messages.store(0, Ordering::Relaxed);
+            if elapsed > Self::WINDOW_MS {
+                if self
+                    .window_start
+                    .compare_exchange(window_start, now_ms, Ordering::Relaxed, Ordering::Relaxed)
+                    .is_ok()
+                {
+                    self.messages.store(0, Ordering::Relaxed);
+                }
+            }
+
+            let current = self.messages.load(Ordering::Relaxed);
+            if current >= Self::MAX_MESSAGES {
+                return false;
+            }
+
+            if self
+                .messages
+                .compare_exchange(current, current + 1, Ordering::Relaxed, Ordering::Relaxed)
+                .is_ok()
+            {
+                return true;
+            }
         }
-
-        let count = self.messages.fetch_add(1, Ordering::Relaxed);
-        count < Self::MAX_MESSAGES
     }
 }
 

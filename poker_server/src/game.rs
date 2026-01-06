@@ -139,19 +139,23 @@ impl PokerGame {
             .and_then(|&i| self.players.values().nth(i).map(|p| p.id.clone()))
             .unwrap();
 
+        let mut total_pot = 0;
+
         if let Some(sb_player) = self.players.get_mut(&sb_player_id) {
             let sb_amount = self.small_blind.min(sb_player.chips);
             sb_player.chips -= sb_amount;
             sb_player.current_bet = sb_amount;
+            total_pot += sb_amount;
         }
 
         if let Some(bb_player) = self.players.get_mut(&bb_player_id) {
             let bb_amount = self.big_blind.min(bb_player.chips);
             bb_player.chips -= bb_amount;
             bb_player.current_bet = bb_amount;
+            total_pot += bb_amount;
         }
 
-        self.pot = self.small_blind + self.big_blind;
+        self.pot = total_pot;
         self.min_raise = self.big_blind * 2;
     }
 
@@ -194,8 +198,13 @@ impl PokerGame {
         if active_positions.is_empty() {
             return None;
         }
-        let next_pos = (from_position + 1) % active_positions.len();
-        active_positions.get(next_pos).copied()
+        for i in 1..=active_positions.len() {
+            let next_pos = (from_position + i) % active_positions.len();
+            if let Some(&pos) = active_positions.get(next_pos) {
+                return Some(pos);
+            }
+        }
+        None
     }
 
     fn start_hand(&mut self) {
@@ -269,19 +278,22 @@ impl PokerGame {
             return;
         }
 
-        let current_player_idx = self.current_player_position % active_positions.len();
+        let player_idx = active_positions
+            .iter()
+            .position(|&pos| pos == self.current_player_position)
+            .unwrap_or(0);
 
         let action_update = ActionRequiredUpdate {
             player_id: self
                 .players
                 .values()
-                .nth(current_player_idx)
+                .nth(active_positions[player_idx])
                 .map(|p| p.id.clone())
                 .unwrap_or_default(),
             player_name: self
                 .players
                 .values()
-                .nth(current_player_idx)
+                .nth(active_positions[player_idx])
                 .map(|p| p.name.clone())
                 .unwrap_or_default(),
             min_raise: self.min_raise,
@@ -289,7 +301,7 @@ impl PokerGame {
             player_chips: self
                 .players
                 .values()
-                .nth(current_player_idx)
+                .nth(active_positions[player_idx])
                 .map(|p| p.chips)
                 .unwrap_or(0),
         };
@@ -313,8 +325,14 @@ impl PokerGame {
             return None;
         }
 
-        let current_player_idx = self.current_player_position % active_positions.len();
-        self.players.values().nth(current_player_idx)
+        if let Some(idx) = active_positions
+            .iter()
+            .position(|&pos| pos == self.current_player_position)
+        {
+            self.players.values().nth(active_positions[idx])
+        } else {
+            self.players.values().nth(active_positions[0])
+        }
     }
 
     pub fn handle_action(&mut self, player_id: &str, action: PlayerAction) -> Result<(), String> {
@@ -355,11 +373,17 @@ impl PokerGame {
                 if player_call_amount > 0 {
                     return Err("Cannot bet, must call or raise".to_string());
                 }
+                if amount > player.chips {
+                    return Err(format!(
+                        "Bet amount {} exceeds your chips ({})",
+                        amount, player.chips
+                    ));
+                }
                 if amount < self.min_raise && player.chips > self.min_raise {
                     return Err(format!("Minimum bet is {}", self.min_raise));
                 }
 
-                let bet_amount = amount.min(player.chips);
+                let bet_amount = amount;
                 player.chips -= bet_amount;
                 player.current_bet = bet_amount;
                 self.pot += bet_amount;
@@ -376,8 +400,15 @@ impl PokerGame {
                     return Err(format!("Minimum raise is to {}", self.min_raise));
                 }
 
-                let raise_amount = (current_bet + amount) - player.current_bet;
-                let actual_raise = raise_amount.min(player.chips);
+                let required_chips = total_bet - player.current_bet;
+                if required_chips > player.chips {
+                    return Err(format!(
+                        "Raise requires {} more chips, but you only have {}",
+                        required_chips, player.chips
+                    ));
+                }
+
+                let actual_raise = required_chips.min(player.chips);
 
                 player.chips -= actual_raise;
                 player.current_bet += actual_raise;
@@ -416,8 +447,15 @@ impl PokerGame {
             return;
         }
 
-        let next_pos = (self.current_player_position + 1) % active_positions.len();
-        self.current_player_position = next_pos;
+        if let Some(current_idx) = active_positions
+            .iter()
+            .position(|&pos| pos == self.current_player_position)
+        {
+            let next_idx = (current_idx + 1) % active_positions.len();
+            self.current_player_position = active_positions[next_idx];
+        } else {
+            self.current_player_position = active_positions[0];
+        }
 
         self.request_action();
     }
@@ -478,18 +516,17 @@ impl PokerGame {
 
         hand_evals.sort_by(|a, b| b.1.cmp(&a.1));
 
+        let best_eval = &hand_evals[0].1;
         let winners: Vec<&PlayerState> = hand_evals
             .iter()
             .filter(|(_, eval)| {
-                eval.rank == hand_evals[0].1.rank && eval.tiebreakers == hand_evals[0].1.tiebreakers
+                eval.rank == best_eval.rank && eval.tiebreakers == best_eval.tiebreakers
             })
             .map(|(p, _)| *p)
             .collect();
 
         let winner_ids: Vec<String> = winners.iter().map(|p| p.id.clone()).collect();
         let winner_count = winners.len() as i32;
-        let pot_per_player = self.pot / winner_count;
-        let remainder = self.pot % winner_count;
 
         let showdown_update = ShowdownUpdate {
             community_cards: self.community_cards.iter().map(|c| c.to_string()).collect(),
@@ -507,9 +544,12 @@ impl PokerGame {
             winners: winner_ids.clone(),
         };
 
+        let pot_per_winner = self.pot / winner_count;
+        let remainder = self.pot % winner_count;
+
         for (i, winner_id) in winner_ids.iter().enumerate() {
             if let Some(player) = self.players.get_mut(winner_id) {
-                let mut winnings = pot_per_player;
+                let mut winnings = pot_per_winner;
                 if i < remainder as usize {
                     winnings += 1;
                 }
