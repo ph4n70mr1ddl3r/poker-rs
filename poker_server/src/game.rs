@@ -115,26 +115,26 @@ impl PokerGame {
     }
 
     fn post_blinds(&mut self) {
-        let player_ids: Vec<String> = self.players.keys().cloned().collect();
-        if player_ids.len() < 2 {
+        let active_positions = self.get_active_player_positions();
+        if active_positions.len() < 2 {
             return;
         }
 
-        let sorted_positions: Vec<usize> = self.get_active_player_positions();
-        if sorted_positions.len() < 2 {
-            return;
-        }
+        let sb_position = active_positions[0];
+        let bb_position = active_positions[1];
 
-        let sb_player_id = sorted_positions
-            .iter()
-            .nth(0)
-            .and_then(|&i| self.players.values().nth(i).map(|p| p.id.clone()))
+        let sb_player_id = self
+            .players
+            .values()
+            .nth(sb_position)
+            .map(|p| p.id.clone())
             .unwrap();
 
-        let bb_player_id = sorted_positions
-            .iter()
-            .nth(1)
-            .and_then(|&i| self.players.values().nth(i).map(|p| p.id.clone()))
+        let bb_player_id = self
+            .players
+            .values()
+            .nth(bb_position)
+            .map(|p| p.id.clone())
             .unwrap();
 
         let mut total_pot = 0;
@@ -512,6 +512,57 @@ impl PokerGame {
         }
     }
 
+    fn calculate_side_pots(&self) -> Vec<(i32, Vec<String>)> {
+        let mut pots = Vec::new();
+        let mut players: Vec<_> = self.players.values().filter(|p| !p.is_folded).collect();
+
+        if players.len() < 2 {
+            return pots;
+        }
+
+        players.sort_by_key(|p| p.current_bet);
+
+        let min_bet = players[0].current_bet;
+        let total_in_min_pot: i32 = players.iter().map(|p| p.current_bet.min(min_bet)).sum();
+        let min_pot_contributors: Vec<String> = players
+            .iter()
+            .filter(|p| p.current_bet >= min_bet)
+            .map(|p| p.id.clone())
+            .collect();
+
+        if total_in_min_pot > 0 {
+            pots.push((total_in_min_pot, min_pot_contributors));
+        }
+
+        let mut remaining_players: Vec<_> =
+            players.iter().filter(|p| p.current_bet > min_bet).collect();
+
+        while remaining_players.len() >= 2 {
+            let next_min = remaining_players[0].current_bet;
+            let contribution = remaining_players
+                .iter()
+                .map(|p| p.current_bet.min(next_min))
+                .sum();
+            let contributors: Vec<String> = remaining_players
+                .iter()
+                .filter(|p| p.current_bet >= next_min)
+                .map(|p| p.id.clone())
+                .collect();
+
+            if contribution > 0 && !contributors.is_empty() {
+                pots.push((contribution, contributors));
+            }
+
+            remaining_players = remaining_players
+                .iter()
+                .filter(|p| p.current_bet > next_min)
+                .cloned()
+                .collect();
+        }
+
+        pots
+    }
+
     fn showdown(&mut self) {
         let active_players: Vec<&PlayerState> =
             self.players.values().filter(|p| !p.is_folded).collect();
@@ -521,10 +572,17 @@ impl PokerGame {
             return;
         }
 
+        let side_pots = self.calculate_side_pots();
+
         let mut hand_evals: Vec<(&PlayerState, HandEvaluation)> = active_players
             .iter()
             .map(|p| (*p, self.evaluate_hand(*p)))
             .collect();
+
+        if hand_evals.is_empty() {
+            self.end_hand();
+            return;
+        }
 
         hand_evals.sort_by(|a, b| b.1.cmp(&a.1));
 
@@ -561,15 +619,36 @@ impl PokerGame {
             winners: winner_ids.clone(),
         };
 
-        let pot_per_winner = self.pot / winner_count;
-        let remainder = self.pot % winner_count;
+        let winnings_distribution: Vec<(String, i32)> = {
+            let mut distributed = Vec::new();
+            for (pot_amount, eligible_players) in side_pots {
+                let pot_winner_ids: Vec<String> = winners
+                    .iter()
+                    .filter(|w| eligible_players.contains(&w.id))
+                    .map(|w| w.id.clone())
+                    .collect();
 
-        for (i, winner_id) in winner_ids.iter().enumerate() {
-            if let Some(player) = self.players.get_mut(winner_id) {
-                let mut winnings = pot_per_winner;
-                if i < remainder as usize {
-                    winnings += 1;
+                if pot_winner_ids.is_empty() {
+                    continue;
                 }
+
+                let winner_count_in_pot = pot_winner_ids.len() as i32;
+                let pot_per_winner = pot_amount / winner_count_in_pot;
+                let remainder = pot_amount % winner_count_in_pot;
+
+                for (i, winner_id) in pot_winner_ids.iter().enumerate() {
+                    let mut winnings = pot_per_winner;
+                    if i < remainder as usize {
+                        winnings += 1;
+                    }
+                    distributed.push((winner_id.clone(), winnings));
+                }
+            }
+            distributed
+        };
+
+        for (winner_id, winnings) in winnings_distribution {
+            if let Some(player) = self.players.get_mut(&winner_id) {
                 player.chips += winnings;
             }
         }

@@ -7,14 +7,12 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::broadcast;
 use tokio::sync::mpsc::Sender;
+use uuid::Uuid;
+
+pub const MAX_CONNECTIONS: usize = 100;
+pub const MAX_CONNECTIONS_PER_IP: usize = 5;
 
 pub type PlayerId = String;
-
-fn lock_server<'a>(
-    server: &'a Arc<Mutex<PokerServer>>,
-) -> parking_lot::MutexGuard<'a, PokerServer> {
-    server.lock()
-}
 
 fn lock_game<'a>(game: &'a Arc<Mutex<PokerGame>>) -> parking_lot::MutexGuard<'a, PokerGame> {
     game.lock()
@@ -27,6 +25,7 @@ pub struct ServerPlayer {
     pub connected: bool,
     pub ws_sender: Option<Sender<String>>,
     pub seated: bool,
+    pub session_token: String,
 }
 
 impl ServerPlayer {
@@ -37,6 +36,7 @@ impl ServerPlayer {
             connected: false,
             ws_sender: None,
             seated: false,
+            session_token: Uuid::new_v4().to_string(),
         }
     }
 }
@@ -46,6 +46,8 @@ pub struct PokerServer {
     games: HashMap<String, Arc<Mutex<PokerGame>>>,
     player_sessions: HashMap<PlayerId, String>,
     tx: broadcast::Sender<ServerMessage>,
+    connection_count: usize,
+    ip_connections: HashMap<String, usize>,
 }
 
 impl PokerServer {
@@ -55,6 +57,32 @@ impl PokerServer {
             games: HashMap::new(),
             player_sessions: HashMap::new(),
             tx: broadcast::channel(100).0,
+            connection_count: 0,
+            ip_connections: HashMap::new(),
+        }
+    }
+
+    pub fn can_accept_connection(&self, ip: &str) -> bool {
+        self.connection_count < MAX_CONNECTIONS
+            && self
+                .ip_connections
+                .get(ip)
+                .map(|c| *c < MAX_CONNECTIONS_PER_IP)
+                .unwrap_or(true)
+    }
+
+    pub fn register_connection(&mut self, ip: &str) {
+        self.connection_count += 1;
+        *self.ip_connections.entry(ip.to_string()).or_insert(0) += 1;
+    }
+
+    pub fn unregister_connection(&mut self, ip: &str) {
+        self.connection_count = self.connection_count.saturating_sub(1);
+        if let Some(count) = self.ip_connections.get_mut(ip) {
+            *count = count.saturating_sub(1);
+            if *count == 0 {
+                self.ip_connections.remove(ip);
+            }
         }
     }
 
@@ -83,6 +111,7 @@ impl PokerServer {
         if let Some(player) = self.players.get_mut(player_id) {
             player.connected = true;
             player.ws_sender = Some(ws_sender);
+            player.session_token = Uuid::new_v4().to_string();
         }
     }
 
@@ -91,6 +120,13 @@ impl PokerServer {
             player.connected = false;
             player.ws_sender = None;
         }
+    }
+
+    pub fn verify_session(&self, player_id: &str, session_token: &str) -> bool {
+        self.players
+            .get(player_id)
+            .map(|p| p.session_token == session_token)
+            .unwrap_or(false)
     }
 
     pub fn seat_player(&mut self, player_id: &str, game_id: &str) -> ServerResult<()> {
@@ -142,7 +178,7 @@ impl PokerServer {
         let players: Vec<PlayerUpdate> = poker_game
             .players
             .values()
-            .map(|p| PlayerUpdate {
+            .map(|p: &poker_protocol::PlayerState| PlayerUpdate {
                 player_id: p.id.clone(),
                 player_name: p.name.clone(),
                 chips: p.chips,
@@ -253,16 +289,29 @@ impl PokerServer {
             json,
             json.len()
         );
-        let json = Arc::new(json);
+
         let game = self.games.get(game_id);
         if let Some(game) = game {
             let pg = lock_game(game);
-            let players = pg.get_players();
-            debug!("Game has {} players", players.len());
-            let json = Arc::clone(&json);
-            for player_id in players.keys() {
+
+            let player_ids: Vec<String> = pg
+                .get_players()
+                .keys()
+                .filter(|player_id| {
+                    self.players
+                        .get(player_id.as_str())
+                        .map(|p| p.connected)
+                        .unwrap_or(false)
+                })
+                .cloned()
+                .collect();
+
+            drop(pg);
+
+            let json = Arc::new(json);
+            for player_id in player_ids {
                 debug!("Checking player {}", player_id);
-                if let Some(player) = self.players.get(player_id) {
+                if let Some(player) = self.players.get(&player_id) {
                     if player.connected {
                         if let Some(ref sender) = player.ws_sender {
                             debug!(

@@ -29,7 +29,6 @@ struct RateLimiter {
 impl RateLimiter {
     const MAX_MESSAGES: u64 = 100;
     const WINDOW_MS: u64 = 1000;
-    const YIELD_THRESHOLD: usize = 10;
 
     fn new() -> Self {
         Self {
@@ -40,38 +39,33 @@ impl RateLimiter {
 
     fn allow(&self) -> bool {
         let now_ms = Instant::now().elapsed().as_millis() as u64;
-        let mut spin_count = 0;
 
         loop {
-            let window_start = self.window_start.load(Ordering::Relaxed);
+            let window_start = self.window_start.load(Ordering::Acquire);
             let elapsed = now_ms.saturating_sub(window_start);
 
             if elapsed > Self::WINDOW_MS {
                 if self
                     .window_start
-                    .compare_exchange(window_start, now_ms, Ordering::Relaxed, Ordering::Relaxed)
+                    .compare_exchange(window_start, now_ms, Ordering::AcqRel, Ordering::Acquire)
                     .is_ok()
                 {
-                    self.messages.store(0, Ordering::Relaxed);
+                    self.messages.store(0, Ordering::Release);
                 }
+                continue;
             }
 
-            let current = self.messages.load(Ordering::Relaxed);
+            let current = self.messages.load(Ordering::Acquire);
             if current >= Self::MAX_MESSAGES {
                 return false;
             }
 
             if self
                 .messages
-                .compare_exchange(current, current + 1, Ordering::Relaxed, Ordering::Relaxed)
+                .compare_exchange(current, current + 1, Ordering::AcqRel, Ordering::Acquire)
                 .is_ok()
             {
                 return true;
-            }
-
-            spin_count += 1;
-            if spin_count >= Self::YIELD_THRESHOLD {
-                std::hint::spin_loop();
             }
         }
     }
@@ -99,10 +93,37 @@ fn validate_action_amount(amount: i64, max_allowed: i32) -> Result<i32, String> 
 const MAX_MESSAGE_SIZE: usize = 4096;
 const MAX_PLAYER_CHIPS: i32 = 1000000;
 const STARTING_CHIPS: i32 = 1000;
-const DEFAULT_SMALL_BLIND: i32 = 5;
-const DEFAULT_BIG_BLIND: i32 = 10;
 const CHANNEL_CAPACITY: usize = 100;
 const INACTIVITY_TIMEOUT_MS: u64 = 600000;
+const MAX_CONNECTIONS: usize = 100;
+const MAX_CONNECTIONS_PER_IP: usize = 5;
+
+#[derive(Clone)]
+pub struct ServerConfig {
+    pub max_player_chips: i32,
+    pub starting_chips: i32,
+    pub small_blind: i32,
+    pub big_blind: i32,
+    pub max_message_size: usize,
+    pub inactivity_timeout_ms: u64,
+    pub max_connections: usize,
+    pub max_connections_per_ip: usize,
+}
+
+impl Default for ServerConfig {
+    fn default() -> Self {
+        Self {
+            max_player_chips: MAX_PLAYER_CHIPS,
+            starting_chips: STARTING_CHIPS,
+            small_blind: 5,
+            big_blind: 10,
+            max_message_size: MAX_MESSAGE_SIZE,
+            inactivity_timeout_ms: INACTIVITY_TIMEOUT_MS,
+            max_connections: MAX_CONNECTIONS,
+            max_connections_per_ip: MAX_CONNECTIONS_PER_IP,
+        }
+    }
+}
 
 struct ShutdownState {
     should_shutdown: Arc<AtomicBool>,
@@ -162,6 +183,7 @@ async fn wait_for_shutdown_signal() {
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     env_logger::init();
 
+    let config = ServerConfig::default();
     let server = Arc::new(Mutex::new(PokerServer::new()));
     let shutdown_state = ShutdownState::new();
 
@@ -173,8 +195,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let mut server_guard = server.lock();
         server_guard.create_game(
             "main_table".to_string(),
-            DEFAULT_SMALL_BLIND,
-            DEFAULT_BIG_BLIND,
+            config.small_blind,
+            config.big_blind,
         )
     };
 
@@ -297,9 +319,12 @@ fn sanitize_chat_message(text: &str) -> String {
     let max_len = 500;
     let mut result = String::with_capacity(text.len().min(max_len));
     for c in text.chars().take(max_len) {
-        if c.is_control() {
+        if c.is_control() && !c.is_whitespace() {
+            continue;
+        }
+        if c == '\t' || c == '\n' || c == '\r' {
             result.push(' ');
-        } else {
+        } else if !c.is_control() {
             result.push(c);
         }
     }
@@ -310,8 +335,6 @@ struct MessageHandler {
     server: Arc<Mutex<PokerServer>>,
     player_id: String,
     rate_limiter: Arc<RateLimiter>,
-    server_for_read: Arc<Mutex<PokerServer>>,
-    player_id_clone: String,
 }
 
 impl MessageHandler {
@@ -320,27 +343,23 @@ impl MessageHandler {
         player_id: String,
         rate_limiter: Arc<RateLimiter>,
     ) -> Self {
-        let server_for_read = Arc::clone(&server);
-        let player_id_clone = player_id.clone();
         Self {
             server,
             player_id,
             rate_limiter,
-            server_for_read,
-            player_id_clone,
         }
     }
 
     async fn handle_connect(&self) {
         let mut server = self.server.lock();
-        if let Err(e) = server.handle_message(&self.player_id_clone, ClientMessage::Connect) {
+        if let Err(e) = server.handle_message(&self.player_id, ClientMessage::Connect) {
             self.send_error(&e.to_string());
         }
     }
 
     async fn handle_action(&self, value: &serde_json::Value) {
         if !self.rate_limiter.allow() {
-            warn!("Player {} action rate limited", self.player_id_clone);
+            warn!("Player {} action rate limited", self.player_id);
             return;
         }
 
@@ -362,7 +381,7 @@ impl MessageHandler {
 
     fn handle_bet(&self, amount_value: i64) {
         if !self.rate_limiter.allow() {
-            warn!("Player {} bet rate limited", self.player_id_clone);
+            warn!("Player {} bet rate limited", self.player_id);
             return;
         }
         match validate_action_amount(amount_value, MAX_PLAYER_CHIPS) {
@@ -377,7 +396,7 @@ impl MessageHandler {
 
     fn handle_raise(&self, amount_value: i64) {
         if !self.rate_limiter.allow() {
-            warn!("Player {} raise rate limited", self.player_id_clone);
+            warn!("Player {} raise rate limited", self.player_id);
             return;
         }
         match validate_action_amount(amount_value, MAX_PLAYER_CHIPS) {
@@ -392,8 +411,7 @@ impl MessageHandler {
 
     fn send_action(&self, action: poker_protocol::PlayerAction) {
         let mut server = self.server.lock();
-        if let Err(e) = server.handle_message(&self.player_id_clone, ClientMessage::Action(action))
-        {
+        if let Err(e) = server.handle_message(&self.player_id, ClientMessage::Action(action)) {
             self.send_error(&e.to_string());
         }
     }
@@ -401,17 +419,17 @@ impl MessageHandler {
     fn send_error(&self, error: &str) {
         let error_msg = ServerMessage::Error(error.to_string());
         if let Ok(json) = serde_json::to_string(&error_msg) {
-            let mut server = self.server_for_read.lock();
-            server.send_to_player(&self.player_id_clone, json);
+            let server = self.server.lock();
+            server.send_to_player(&self.player_id, json);
         }
     }
 
     async fn handle_chat(&self, value: &serde_json::Value) {
         if let Some(chat_text) = value["text"].as_str() {
             let sanitized_text = sanitize_chat_message(chat_text);
-            let mut server = self.server_for_read.lock();
+            let mut server = self.server.lock();
             if let Err(e) =
-                server.handle_message(&self.player_id_clone, ClientMessage::Chat(sanitized_text))
+                server.handle_message(&self.player_id, ClientMessage::Chat(sanitized_text))
             {
                 self.send_error(&e.to_string());
             }
@@ -419,22 +437,22 @@ impl MessageHandler {
     }
 
     async fn handle_sit_out(&self) {
-        let mut server = self.server_for_read.lock();
-        if let Err(e) = server.handle_message(&self.player_id_clone, ClientMessage::SitOut) {
+        let mut server = self.server.lock();
+        if let Err(e) = server.handle_message(&self.player_id, ClientMessage::SitOut) {
             self.send_error(&e.to_string());
         }
     }
 
     async fn handle_return(&self) {
-        let mut server = self.server_for_read.lock();
-        if let Err(e) = server.handle_message(&self.player_id_clone, ClientMessage::Return) {
+        let mut server = self.server.lock();
+        if let Err(e) = server.handle_message(&self.player_id, ClientMessage::Return) {
             self.send_error(&e.to_string());
         }
     }
 
     async fn handle_client_message(&self, client_msg: ClientMessage) {
-        let mut server = self.server_for_read.lock();
-        if let Err(e) = server.handle_message(&self.player_id_clone, client_msg) {
+        let mut server = self.server.lock();
+        if let Err(e) = server.handle_message(&self.player_id, client_msg) {
             self.send_error(&e.to_string());
         }
     }
@@ -442,10 +460,27 @@ impl MessageHandler {
 
 async fn handle_connection(
     stream: tokio::net::TcpStream,
-    _addr: SocketAddr,
+    addr: SocketAddr,
     server: Arc<Mutex<PokerServer>>,
     player_id: String,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    let ip = addr.ip().to_string();
+
+    let can_accept = {
+        let s = server.lock();
+        s.can_accept_connection(&ip)
+    };
+
+    if !can_accept {
+        warn!("Connection rejected from {}: too many connections", ip);
+        return Ok(());
+    }
+
+    {
+        let mut s = server.lock();
+        s.register_connection(&ip);
+    }
+
     let ws_stream = accept_async(stream).await?;
     debug!("WebSocket handshake completed for player: {}", player_id);
 
@@ -472,13 +507,15 @@ async fn handle_connection(
     }
 
     let server_for_read = Arc::clone(&server);
+    let server_for_cleanup = Arc::clone(&server);
     let player_id_clone = player_id.clone();
     let rate_limiter_clone = Arc::clone(&rate_limiter);
-    let handler = MessageHandler::new(server, player_id, rate_limiter_clone.clone());
+    let handler = MessageHandler::new(server, player_id.clone(), rate_limiter_clone.clone());
 
     let read_task = tokio::spawn(async move {
         let mut stream = read;
         let mut last_activity = Instant::now();
+        let server_for_read = server_for_read;
 
         while let Some(result) = stream.next().await {
             if last_activity.elapsed() > Duration::from_millis(INACTIVITY_TIMEOUT_MS) {
@@ -494,7 +531,7 @@ async fn handle_connection(
                         warn!("Player {} exceeded rate limit", player_id_clone);
                         let error_msg = ServerMessage::Error("Rate limit exceeded".to_string());
                         if let Ok(json) = serde_json::to_string(&error_msg) {
-                            let mut server = server_for_read.lock();
+                            let server = server_for_read.lock();
                             server.send_to_player(&player_id_clone, json);
                         }
                         break;
@@ -508,7 +545,7 @@ async fn handle_connection(
                         );
                         let error_msg = ServerMessage::Error("Message too large".to_string());
                         if let Ok(json) = serde_json::to_string(&error_msg) {
-                            let mut server = server_for_read.lock();
+                            let server = server_for_read.lock();
                             server.send_to_player(&player_id_clone, json);
                         }
                         break;
@@ -557,8 +594,13 @@ async fn handle_connection(
         }
     });
 
-    read_task.await?;
+    let read_result = read_task.await;
     drop(write_handle);
 
-    Ok(())
+    {
+        let mut s = server_for_cleanup.lock();
+        s.unregister_connection(&ip);
+    }
+
+    read_result.map_err(|e| Box::new(e) as Box<dyn std::error::Error>)
 }
