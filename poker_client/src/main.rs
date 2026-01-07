@@ -8,7 +8,6 @@ use std::sync::{Arc, Mutex};
 use tokio::runtime::Runtime;
 use tokio::time::{timeout, Duration};
 use tokio_tungstenite::tungstenite::Message;
-use uuid::Uuid;
 
 pub const DEFAULT_SERVER_ADDR: &str = "ws://127.0.0.1:8080";
 pub const ENV_SERVER_ADDR: &str = "POKER_SERVER_URL";
@@ -139,10 +138,18 @@ async fn connect_with_retry(
     server_addr: &str,
     tx_for_network: &mpsc::Sender<ClientNetworkMessage>,
     reconnect_state: &Arc<Mutex<ReconnectState>>,
-) -> Result<(), String> {
+) -> Result<
+    (
+        tokio_tungstenite::WebSocketStream<
+            tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+        >,
+        String,
+    ),
+    String,
+> {
     loop {
         let delay = {
-            let mut state = reconnect_state.lock();
+            let state = reconnect_state.lock().map_err(|_| "Mutex poisoned")?;
             match state.next_attempt() {
                 Some(d) => d,
                 None => {
@@ -154,10 +161,16 @@ async fn connect_with_retry(
             }
         };
 
+        let attempt = {
+            reconnect_state
+                .lock()
+                .map_err(|_| "Mutex poisoned")?
+                .attempt
+        };
+
         info!(
             "Attempting to connect to {} (attempt {})...",
-            server_addr,
-            { reconnect_state.lock().attempt }
+            server_addr, attempt
         );
 
         let connection_result = timeout(
@@ -169,12 +182,18 @@ async fn connect_with_retry(
         match connection_result {
             Ok(Ok((ws_stream, _))) => {
                 info!("WebSocket handshake successful!");
-                reconnect_state.lock().reset();
+                {
+                    let mut state = reconnect_state.lock().map_err(|_| "Mutex poisoned")?;
+                    state.reset();
+                }
                 return Ok((ws_stream, server_addr.to_string()));
             }
             Ok(Err(e)) => {
                 warn!("Connection attempt failed: {}", e);
-                let attempt = reconnect_state.lock().attempt;
+                let attempt = reconnect_state
+                    .lock()
+                    .map_err(|_| "Mutex poisoned")?
+                    .attempt;
                 let _ = tx_for_network.send(ClientNetworkMessage::Error(format!(
                     "Connection failed (attempt {}): {}",
                     attempt, e
@@ -182,7 +201,10 @@ async fn connect_with_retry(
             }
             Err(_) => {
                 warn!("Connection timed out");
-                let attempt = reconnect_state.lock().attempt;
+                let attempt = reconnect_state
+                    .lock()
+                    .map_err(|_| "Mutex poisoned")?
+                    .attempt;
                 let _ = tx_for_network.send(ClientNetworkMessage::Error(format!(
                     "Connection timed out (attempt {})",
                     attempt
@@ -204,7 +226,12 @@ fn setup_network(mut commands: Commands, server_config: Res<ServerConfig>) {
     let rt = match Runtime::new() {
         Ok(rt) => rt,
         Err(e) => {
-            error!("Failed to create Tokio runtime: {}", e);
+            error!("Failed to create Tokio runtime: {}. Application cannot continue without async runtime.", e);
+            commands.insert_resource(AppState {
+                game_state: PokerGameState::new(),
+                connected: false,
+                raise_amount: String::new(),
+            });
             return;
         }
     };
@@ -237,13 +264,8 @@ fn setup_network(mut commands: Commands, server_config: Res<ServerConfig>) {
 
         let (mut write, read) = ws_stream.split();
 
-        let player_id = Uuid::new_v4().to_string();
-        let send_result = tx_for_network.send(ClientNetworkMessage::Connected(player_id.clone()));
-        info!("Sent Connected message: {:?}", send_result);
-
         let connect_msg = serde_json::json!({
-            "type": "connect",
-            "player_id": player_id
+            "type": "connect"
         });
         info!("Sending connect message: {}", connect_msg);
         let _ = write.send(Message::Text(connect_msg.to_string())).await;
@@ -251,7 +273,7 @@ fn setup_network(mut commands: Commands, server_config: Res<ServerConfig>) {
         let (write_tx, mut write_rx) = tokio::sync::mpsc::channel::<String>(100);
         let write_task = tokio::spawn(async move {
             while let Some(msg) = write_rx.recv().await {
-                info!("Sending to server: {}", msg);
+                debug!("Sending to server: {} bytes", msg.len());
                 let _ = write.send(Message::Text(msg)).await;
             }
         });
@@ -262,9 +284,9 @@ fn setup_network(mut commands: Commands, server_config: Res<ServerConfig>) {
             while let Some(result) = read.next().await {
                 match result {
                     Ok(Message::Text(text)) => {
-                        info!("Received from server: {} bytes", text.len());
+                        debug!("Received from server: {} bytes", text.len());
                         if let Ok(server_msg) = crate::network::parse_message(&text) {
-                            info!("Parsed message type");
+                            debug!("Parsed message type");
                             if let crate::network::NetworkMessage::Ping(timestamp) = server_msg {
                                 let pong_msg = serde_json::json!({
                                     "type": "Pong",
@@ -274,7 +296,7 @@ fn setup_network(mut commands: Commands, server_config: Res<ServerConfig>) {
                             }
                             let client_msg = convert_message(server_msg);
                             let send_result = tx_for_network.send(client_msg);
-                            info!("Sent to main thread: {:?}", send_result);
+                            debug!("Sent to main thread: {:?}", send_result);
                         }
                     }
                     Ok(Message::Close(_)) => {
@@ -337,12 +359,16 @@ fn handle_network_messages(mut app_state: ResMut<AppState>, network_res: Res<Net
         Err(poisoned) => {
             error!("Mutex poisoned, attempting to recover...");
             match poisoned.into_inner() {
-                Some(guard) => guard,
+                Some(guard) => {
+                    warn!("Recovered from mutex poisoning");
+                    guard
+                }
                 None => {
-                    error!("Cannot recover from mutex poisoning - channel lost");
-                    app_state
-                        .game_state
-                        .add_error("Network channel error - please restart".to_string());
+                    error!("Cannot recover from mutex poisoning - channel lost. Please restart the application.");
+                    app_state.game_state.add_error(
+                        "Network channel error - connection lost. Please restart.".to_string(),
+                    );
+                    app_state.connected = false;
                     return;
                 }
             }
@@ -692,17 +718,21 @@ fn update_ui(
                     ui.add_space(10.0);
 
                     ui.label("Raise: $");
+                    let raise_amount_str = app_state.raise_amount.clone();
                     let raise_input =
                         egui::TextEdit::singleline(&mut app_state.raise_amount).desired_width(80.0);
                     ui.add(raise_input);
 
-                    let raise_amount: i32 = app_state.raise_amount.parse().unwrap_or(0);
+                    let raise_amount_result: Result<i32, _> = raise_amount_str.parse();
+                    let raise_amount = raise_amount_result.unwrap_or(0);
+                    let is_valid_raise = raise_amount_result.is_ok() && raise_amount > 0;
 
                     let raise_btn = egui::Button::new("Raise")
                         .fill(egui::Color32::from_rgb(0, 100, 200))
                         .min_size(egui::Vec2::new(100.0, 40.0));
-                    let can_raise =
-                        raise_amount >= action_min_raise && raise_amount <= action_player_chips;
+                    let can_raise = is_valid_raise
+                        && raise_amount >= action_min_raise
+                        && raise_amount <= action_player_chips;
                     if ui.add_enabled(can_raise, raise_btn).clicked() {
                         if let Ok(msg) = serde_json::to_string(&serde_json::json!({
                             "type": "action",
@@ -759,10 +789,11 @@ fn update_ui(
                     .hint_text("Type a message...");
                 if ui.add(chat_input).lost_focus() {
                     if ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                        if !app_state.game_state.pending_chat.is_empty() {
+                        let chat_text = app_state.game_state.pending_chat.clone();
+                        if !chat_text.is_empty() {
                             if let Ok(msg) = serde_json::to_string(&serde_json::json!({
                                 "type": "chat",
-                                "text": app_state.game_state.pending_chat
+                                "text": chat_text
                             })) {
                                 let _ = network_res.ui_tx.send(msg);
                                 info!("Sent chat message");
@@ -844,11 +875,11 @@ fn convert_message(msg: crate::network::NetworkMessage) -> ClientNetworkMessage 
         crate::network::NetworkMessage::Showdown(update) => ClientNetworkMessage::Showdown(update),
         crate::network::NetworkMessage::Chat(msg) => ClientNetworkMessage::Chat(msg),
         crate::network::NetworkMessage::Error(msg) => ClientNetworkMessage::Error(msg),
-        crate::network::NetworkMessage::Ping(timestamp) => {
-            info!("Received Ping #{}", timestamp);
+        crate::network::NetworkMessage::Ping(_) => {
+            ClientNetworkMessage::Error("Unexpected Ping".to_string())
         }
-        crate::network::NetworkMessage::Pong(timestamp) => {
-            info!("Received Pong #{}", timestamp);
+        crate::network::NetworkMessage::Pong(_) => {
+            ClientNetworkMessage::Error("Unexpected Pong".to_string())
         }
     }
 }

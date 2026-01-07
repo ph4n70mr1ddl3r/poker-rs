@@ -1,5 +1,5 @@
 use crate::game::PokerGame;
-use log::{debug, error};
+use log::error;
 use parking_lot::Mutex;
 use poker_protocol::{ChatMessage, ClientMessage, PlayerUpdate, ServerMessage};
 use poker_protocol::{ServerError, ServerResult};
@@ -9,6 +9,10 @@ use tokio::sync::broadcast;
 use tokio::sync::mpsc::Sender;
 use tokio::time::{timeout, Duration};
 use uuid::Uuid;
+
+fn lock_game(game: &Arc<Mutex<PokerGame>>) -> parking_lot::MutexGuard<'_, PokerGame> {
+    game.lock()
+}
 
 pub const MAX_CONNECTIONS: usize = 100;
 pub const MAX_CONNECTIONS_PER_IP: usize = 5;
@@ -306,9 +310,12 @@ impl PokerServer {
 
             for (player_id, sender) in players {
                 let msg = json.clone();
-                if let Err(e) = timeout(timeout_duration, sender.send(msg)).await {
-                    error!("Timeout sending to player {}: {}", player_id, e);
-                }
+                let sender = sender.clone();
+                tokio::spawn(async move {
+                    if let Err(e) = tokio::time::timeout(timeout_duration, sender.send(msg)).await {
+                        error!("Timeout sending to player {}: {}", player_id, e);
+                    }
+                });
             }
         }
     }
@@ -323,6 +330,13 @@ impl PokerServer {
             }
         }
     }
+
+    pub fn verify_session(&self, player_id: &str, token: &str) -> bool {
+        self.players
+            .get(player_id)
+            .map(|p| p.session_token == token)
+            .unwrap_or(false)
+    }
 }
 
 impl Default for PokerServer {
@@ -334,7 +348,6 @@ impl Default for PokerServer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use poker_protocol::{ClientMessage, PlayerAction};
 
     #[test]
     fn test_server_new() {
@@ -404,7 +417,7 @@ mod tests {
         let game = server.create_game("test_game".to_string(), 5, 10);
 
         assert!(server.games.contains_key("test_game"));
-        assert!(!game.lock().players.is_empty());
+        assert!(game.lock().players.is_empty());
     }
 
     #[test]

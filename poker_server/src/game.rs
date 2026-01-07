@@ -362,6 +362,9 @@ impl PokerGame {
                 }
             }
             PlayerAction::Raise(amount) => {
+                if player_call_amount > 0 {
+                    return Err(ServerError::CannotRaise);
+                }
                 let total_bet = current_bet + amount;
                 if total_bet < self.min_raise {
                     return Err(ServerError::MinRaise(self.min_raise));
@@ -449,12 +452,6 @@ impl PokerGame {
             }
         } else {
             self.current_player_id = active_player_ids.first().cloned();
-        }
-
-        for player in self.players.values_mut() {
-            if !player.has_acted {
-                player.has_acted = false;
-            }
         }
 
         if self.current_street != Street::Showdown && self.should_advance_street() {
@@ -770,8 +767,12 @@ impl PokerGame {
 
     fn get_flush_cards(&self, cards: &[Card]) -> Option<Vec<Card>> {
         for suit in [Suit::Clubs, Suit::Diamonds, Suit::Hearts, Suit::Spades] {
-            let flush_cards: Vec<Card> = cards.iter().filter(|c| c.suit == suit).cloned().collect();
+            let mut flush_cards: Vec<Card> =
+                cards.iter().filter(|c| c.suit == suit).cloned().collect();
             if flush_cards.len() >= 5 {
+                flush_cards.sort_by_key(|c| c.rank as u8);
+                flush_cards.reverse();
+                flush_cards.truncate(5);
                 return Some(flush_cards);
             }
         }
@@ -791,6 +792,21 @@ impl PokerGame {
             return None;
         }
 
+        let has_wheel = ranks.contains(&2)
+            && ranks.contains(&3)
+            && ranks.contains(&4)
+            && ranks.contains(&5)
+            && ranks.contains(&14);
+
+        if has_wheel {
+            return Some(HandEvaluation {
+                rank: HandRank::Straight,
+                primary_rank: 6,
+                tiebreakers: vec![6, 5, 4, 3, 2],
+                description: "Straight, 5-4-3-2-A (Wheel)".to_string(),
+            });
+        }
+
         let mut straight_high = 0;
         let mut consecutive = 1;
 
@@ -807,21 +823,6 @@ impl PokerGame {
 
         if consecutive >= 5 && ranks[ranks.len() - 1] > straight_high {
             straight_high = ranks[ranks.len() - 1];
-        }
-
-        let has_wheel = ranks.contains(&2)
-            && ranks.contains(&3)
-            && ranks.contains(&4)
-            && ranks.contains(&5)
-            && ranks.contains(&14);
-
-        if has_wheel && straight_high < 6 {
-            return Some(HandEvaluation {
-                rank: HandRank::Straight,
-                primary_rank: 6,
-                tiebreakers: vec![6, 5, 4, 3, 2],
-                description: "Straight, 6-5-4-3-2 (Wheel)".to_string(),
-            });
         }
 
         if straight_high > 0 {

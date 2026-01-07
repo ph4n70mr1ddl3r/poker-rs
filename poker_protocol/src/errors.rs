@@ -44,6 +44,9 @@ pub enum ServerError {
     #[error("Cannot bet, must call or raise")]
     CannotBet,
 
+    #[error("Cannot raise, must call first")]
+    CannotRaise,
+
     #[error("Invalid bet amount: {0}")]
     InvalidBet(String),
 
