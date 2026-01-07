@@ -122,6 +122,7 @@ impl PokerServer {
         }
     }
 
+    #[allow(dead_code)]
     pub fn verify_session(&self, player_id: &str, session_token: &str) -> bool {
         self.players
             .get(player_id)
@@ -283,12 +284,6 @@ impl PokerServer {
                 return;
             }
         };
-        debug!(
-            "Broadcasting to game {}: {} (len={})",
-            game_id,
-            json,
-            json.len()
-        );
 
         let game = self.games.get(game_id);
         if let Some(game) = game {
@@ -306,39 +301,27 @@ impl PokerServer {
                 .cloned()
                 .collect();
 
+            let senders: Vec<(String, tokio::sync::mpsc::Sender<String>)> = player_ids
+                .iter()
+                .filter_map(|player_id| {
+                    self.players
+                        .get(player_id.as_str())
+                        .and_then(|p| p.ws_sender.as_ref())
+                        .map(|sender| (player_id.clone(), sender.clone()))
+                })
+                .collect();
+
             drop(pg);
 
             let json = Arc::new(json);
-            for player_id in player_ids {
-                debug!("Checking player {}", player_id);
-                if let Some(player) = self.players.get(&player_id) {
-                    if player.connected {
-                        if let Some(ref sender) = player.ws_sender {
-                            debug!(
-                                "Sending to player {}: {} (len={})",
-                                player_id,
-                                json,
-                                json.len()
-                            );
-                            let sender = sender.clone();
-                            let send_json = Arc::clone(&json);
-                            tokio::spawn(async move {
-                                if let Err(e) = sender.send(send_json.as_str().to_string()).await {
-                                    debug!("Failed to send to player: {}", e);
-                                }
-                            });
-                        } else {
-                            debug!("Player {} has no sender", player_id);
-                        }
-                    } else {
-                        debug!("Player {} is not connected", player_id);
+            for (player_id, sender) in senders {
+                let send_json = Arc::clone(&json);
+                tokio::spawn(async move {
+                    if let Err(e) = sender.send(send_json.as_str().to_string()).await {
+                        debug!("Failed to send to player {}: {}", player_id, e);
                     }
-                } else {
-                    debug!("Player {} not found in players map", player_id);
-                }
+                });
             }
-        } else {
-            debug!("Game {} not found", game_id);
         }
     }
 

@@ -20,7 +20,7 @@ pub struct PokerGame {
     side_pots: Vec<(i32, Vec<String>)>,
     current_street: Street,
     dealer_position: usize,
-    current_player_position: usize,
+    current_player_id: Option<String>,
     min_raise: i32,
     pub tx: broadcast::Sender<ServerMessage>,
     pub game_stage: GameStage,
@@ -45,7 +45,7 @@ impl PokerGame {
             side_pots: Vec::new(),
             current_street: Street::Preflop,
             dealer_position: 0,
-            current_player_position: 0,
+            current_player_id: None,
             min_raise: big_blind * 2,
             tx,
             game_stage: GameStage::WaitingForPlayers,
@@ -115,27 +115,13 @@ impl PokerGame {
     }
 
     fn post_blinds(&mut self) {
-        let active_positions = self.get_active_player_positions();
-        if active_positions.len() < 2 {
+        let active_player_ids = self.get_active_player_ids();
+        if active_player_ids.len() < 2 {
             return;
         }
 
-        let sb_position = active_positions[0];
-        let bb_position = active_positions[1];
-
-        let sb_player_id = self
-            .players
-            .values()
-            .nth(sb_position)
-            .map(|p| p.id.clone())
-            .unwrap();
-
-        let bb_player_id = self
-            .players
-            .values()
-            .nth(bb_position)
-            .map(|p| p.id.clone())
-            .unwrap();
+        let sb_player_id = active_player_ids[0].clone();
+        let bb_player_id = active_player_ids[1].clone();
 
         let mut total_pot = 0;
 
@@ -182,12 +168,11 @@ impl PokerGame {
         }
     }
 
-    fn get_active_player_positions(&self) -> Vec<usize> {
+    fn get_active_player_ids(&self) -> Vec<String> {
         self.players
             .values()
-            .enumerate()
-            .filter(|(_, p)| !p.is_folded && !p.is_sitting_out && p.chips > 0)
-            .map(|(i, _)| i)
+            .filter(|p| !p.is_folded && !p.is_sitting_out && p.chips > 0)
+            .map(|p| p.id.clone())
             .collect()
     }
 
@@ -213,9 +198,11 @@ impl PokerGame {
         self.current_street = Street::Preflop;
         self.game_stage = GameStage::BettingRound(Street::Preflop);
 
-        let active_positions = self.get_active_player_positions();
-        if active_positions.len() >= 2 {
-            self.current_player_position = active_positions[1];
+        let active_player_ids = self.get_active_player_ids();
+        if active_player_ids.len() >= 2 {
+            self.current_player_id = Some(active_player_ids[1].clone());
+        } else {
+            self.current_player_id = active_player_ids.first().cloned();
         }
 
         self.broadcast_game_state();
@@ -257,37 +244,24 @@ impl PokerGame {
     }
 
     fn request_action(&mut self) {
-        let active_positions = self.get_active_player_positions();
-        if active_positions.is_empty() {
+        let active_player_ids = self.get_active_player_ids();
+        if active_player_ids.is_empty() {
             return;
         }
 
-        let player_idx = active_positions
-            .iter()
-            .position(|&pos| pos == self.current_player_position)
-            .unwrap_or(0);
+        let player_id = self.current_player_id.clone();
+        let player_id = player_id
+            .or_else(|| active_player_ids.first().cloned())
+            .unwrap_or_default();
+
+        let player = self.players.get(&player_id);
 
         let action_update = ActionRequiredUpdate {
-            player_id: self
-                .players
-                .values()
-                .nth(active_positions[player_idx])
-                .map(|p| p.id.clone())
-                .unwrap_or_default(),
-            player_name: self
-                .players
-                .values()
-                .nth(active_positions[player_idx])
-                .map(|p| p.name.clone())
-                .unwrap_or_default(),
+            player_id: player.map(|p| p.id.clone()).unwrap_or_default(),
+            player_name: player.map(|p| p.name.clone()).unwrap_or_default(),
             min_raise: self.min_raise,
             current_bet: self.get_current_bet(),
-            player_chips: self
-                .players
-                .values()
-                .nth(active_positions[player_idx])
-                .map(|p| p.chips)
-                .unwrap_or(0),
+            player_chips: player.map(|p| p.chips).unwrap_or(0),
         };
 
         let msg = ServerMessage::ActionRequired(action_update);
@@ -304,19 +278,18 @@ impl PokerGame {
     }
 
     fn get_player_to_act(&self) -> Option<&PlayerState> {
-        let active_positions = self.get_active_player_positions();
-        if active_positions.is_empty() {
+        let active_player_ids = self.get_active_player_ids();
+        if active_player_ids.is_empty() {
             return None;
         }
 
-        if let Some(idx) = active_positions
-            .iter()
-            .position(|&pos| pos == self.current_player_position)
-        {
-            self.players.values().nth(active_positions[idx])
-        } else {
-            self.players.values().nth(active_positions[0])
+        if let Some(ref player_id) = self.current_player_id {
+            if active_player_ids.contains(player_id) {
+                return self.players.get(player_id);
+            }
         }
+
+        self.players.get(&active_player_ids[0])
     }
 
     pub fn handle_action(&mut self, player_id: &str, action: PlayerAction) -> ServerResult<()> {
@@ -453,20 +426,21 @@ impl PokerGame {
     }
 
     fn advance_action(&mut self) {
-        let active_positions = self.get_active_player_positions();
-        if active_positions.is_empty() {
+        let active_player_ids = self.get_active_player_ids();
+        if active_player_ids.is_empty() {
             self.end_hand();
             return;
         }
 
-        if let Some(current_idx) = active_positions
-            .iter()
-            .position(|&pos| pos == self.current_player_position)
-        {
-            let next_idx = (current_idx + 1) % active_positions.len();
-            self.current_player_position = active_positions[next_idx];
+        if let Some(ref current_id) = self.current_player_id {
+            if let Some(current_idx) = active_player_ids.iter().position(|id| id == current_id) {
+                let next_idx = (current_idx + 1) % active_player_ids.len();
+                self.current_player_id = Some(active_player_ids[next_idx].clone());
+            } else {
+                self.current_player_id = active_player_ids.first().cloned();
+            }
         } else {
-            self.current_player_position = active_positions[0];
+            self.current_player_id = active_player_ids.first().cloned();
         }
 
         for player in self.players.values_mut() {
@@ -1395,5 +1369,66 @@ mod tests {
         let eval = poker_game.evaluate_hand(&player);
         assert_eq!(eval.rank, HandRank::HighCard);
         assert_eq!(eval.primary_rank, 0);
+    }
+
+    #[test]
+    fn test_side_pots_calculation() {
+        let tx = tokio::sync::broadcast::channel(100).0;
+        let mut game = PokerGame::new("test".to_string(), 5, 10, tx);
+        game.add_player("p1".to_string(), "Player1".to_string(), 100);
+        game.add_player("p2".to_string(), "Player2".to_string(), 200);
+        game.add_player("p3".to_string(), "Player3".to_string(), 300);
+
+        if let Some(p1) = game.players.get_mut("p1") {
+            p1.current_bet = 50;
+        }
+        if let Some(p2) = game.players.get_mut("p2") {
+            p2.current_bet = 100;
+        }
+        if let Some(p3) = game.players.get_mut("p3") {
+            p3.current_bet = 100;
+        }
+
+        let pots = game.calculate_side_pots();
+        assert!(!pots.is_empty());
+
+        let main_pot = pots
+            .iter()
+            .find(|(amount, players)| players.len() == 3 && *amount == 150);
+        assert!(
+            main_pot.is_some(),
+            "Should have main pot with all 3 players"
+        );
+
+        if let Some(p2) = game.players.get_mut("p2") {
+            p2.is_folded = true;
+        }
+
+        let pots_after_fold = game.calculate_side_pots();
+        assert!(pots_after_fold.len() >= 1);
+    }
+
+    #[test]
+    fn test_all_in_pot_distribution() {
+        let tx = tokio::sync::broadcast::channel(100).0;
+        let mut game = PokerGame::new("test".to_string(), 5, 10, tx);
+        game.add_player("p1".to_string(), "Player1".to_string(), 100);
+        game.add_player("p2".to_string(), "Player2".to_string(), 500);
+
+        if let Some(p1) = game.players.get_mut("p1") {
+            p1.current_bet = 100;
+            p1.is_all_in = true;
+        }
+        if let Some(p2) = game.players.get_mut("p2") {
+            p2.current_bet = 200;
+        }
+
+        let pots = game.calculate_side_pots();
+        assert!(!pots.is_empty());
+
+        let side_pot = pots.iter().find(|(amount, players)| {
+            players.contains(&"p1".to_string()) && players.contains(&"p2".to_string())
+        });
+        assert!(side_pot.is_some());
     }
 }

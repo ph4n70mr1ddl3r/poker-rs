@@ -27,6 +27,92 @@ pub fn parse_message(text: &str) -> Result<NetworkMessage, String> {
         }
     }
 
+    parse_by_struct_name(&value).map_err(|e| format!("Parse error: {}", e))
+}
+
+fn parse_by_struct_name(value: &serde_json::Value) -> Result<NetworkMessage, serde_json::Error> {
+    if let Some(obj) = value.as_object() {
+        for (key, _) in obj {
+            match key.as_str() {
+                "Connected" => {
+                    let player_id: String = match value.get("Connected") {
+                        Some(serde_json::Value::Array(arr)) => {
+                            if let Some(first) = arr.first() {
+                                if let Some(s) = first.as_str() {
+                                    s.to_string()
+                                } else {
+                                    "unknown".to_string()
+                                }
+                            } else {
+                                "unknown".to_string()
+                            }
+                        }
+                        Some(serde_json::Value::String(s)) => s.clone(),
+                        _ => "unknown".to_string(),
+                    };
+                    return Ok::<NetworkMessage, serde_json::Error>(
+                        NetworkMessage::PlayerIdConfirmed(player_id),
+                    );
+                }
+                "PlayerUpdates" => {
+                    return serde_json::from_value::<Vec<PlayerUpdate>>(
+                        value["PlayerUpdates"].clone(),
+                    )
+                    .map(NetworkMessage::PlayerUpdates);
+                }
+                "GameStateUpdate" => {
+                    return serde_json::from_value::<GameStateUpdate>(
+                        value["GameStateUpdate"].clone(),
+                    )
+                    .map(NetworkMessage::GameState);
+                }
+                "ActionRequired" => {
+                    return serde_json::from_value::<ActionRequiredUpdate>(
+                        value["ActionRequired"].clone(),
+                    )
+                    .map(NetworkMessage::ActionRequired);
+                }
+                "PlayerConnected" => {
+                    return serde_json::from_value::<PlayerConnectedUpdate>(
+                        value["PlayerConnected"].clone(),
+                    )
+                    .map(NetworkMessage::PlayerConnected);
+                }
+                "PlayerDisconnected" => {
+                    let player_id = value["PlayerDisconnected"]
+                        .as_str()
+                        .or(value["player_id"].as_str())
+                        .or(value["id"].as_str())
+                        .unwrap_or("unknown")
+                        .to_string();
+                    return Ok::<NetworkMessage, serde_json::Error>(
+                        NetworkMessage::PlayerDisconnected(player_id),
+                    );
+                }
+                "Showdown" => {
+                    return serde_json::from_value::<ShowdownUpdate>(value["Showdown"].clone())
+                        .map(NetworkMessage::Showdown);
+                }
+                "Chat" => {
+                    return serde_json::from_value::<ChatMessage>(value["Chat"].clone())
+                        .map(NetworkMessage::Chat);
+                }
+                "Error" => {
+                    let error_msg = value["Error"]
+                        .as_str()
+                        .or(value["message"].as_str())
+                        .or(value.as_str())
+                        .unwrap_or("Unknown error")
+                        .to_string();
+                    return Ok::<NetworkMessage, serde_json::Error>(NetworkMessage::Error(
+                        error_msg,
+                    ));
+                }
+                _ => continue,
+            }
+        }
+    }
+
     Ok(NetworkMessage::Error("Unknown message format".to_string()))
 }
 

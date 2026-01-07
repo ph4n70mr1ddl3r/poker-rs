@@ -8,6 +8,7 @@ use std::sync::{Arc, Mutex};
 use tokio::runtime::Runtime;
 use tokio::time::{timeout, Duration};
 use tokio_tungstenite::tungstenite::Message;
+use uuid::Uuid;
 
 pub const DEFAULT_SERVER_ADDR: &str = "ws://127.0.0.1:8080";
 pub const ENV_SERVER_ADDR: &str = "POKER_SERVER_URL";
@@ -15,7 +16,6 @@ pub const CONNECTION_TIMEOUT_SECS: u64 = 10;
 
 mod game;
 mod network;
-mod ui;
 
 use game::PokerGameState;
 
@@ -38,7 +38,6 @@ enum ClientNetworkMessage {
 struct AppState {
     game_state: PokerGameState,
     connected: bool,
-    chat_text: String,
 }
 
 impl Default for AppState {
@@ -46,7 +45,6 @@ impl Default for AppState {
         Self {
             game_state: PokerGameState::new(),
             connected: false,
-            chat_text: String::new(),
         }
     }
 }
@@ -55,6 +53,7 @@ impl Default for AppState {
 struct NetworkResources {
     rx: Arc<Mutex<mpsc::Receiver<ClientNetworkMessage>>>,
     ui_tx: mpsc::Sender<String>,
+    _runtime: Runtime,
 }
 
 fn main() {
@@ -134,7 +133,7 @@ fn setup_network(mut commands: Commands, server_config: Res<ServerConfig>) {
 
                 let (mut write, read) = ws_stream.split();
 
-                let player_id = format!("player_{}", rand::random::<u32>());
+                let player_id = Uuid::new_v4().to_string();
                 let send_result =
                     tx_for_network.send(ClientNetworkMessage::Connected(player_id.clone()));
                 info!("Sent Connected message: {:?}", send_result);
@@ -212,7 +211,11 @@ fn setup_network(mut commands: Commands, server_config: Res<ServerConfig>) {
         }
     });
 
-    commands.insert_resource(NetworkResources { rx: rx_arc, ui_tx });
+    commands.insert_resource(NetworkResources {
+        rx: rx_arc,
+        ui_tx,
+        _runtime: rt,
+    });
 }
 
 fn handle_network_messages(mut app_state: ResMut<AppState>, network_res: Res<NetworkResources>) {

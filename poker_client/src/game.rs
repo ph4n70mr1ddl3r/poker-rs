@@ -145,6 +145,7 @@ impl PokerGameState {
             .collect();
     }
 
+    #[allow(dead_code)]
     pub fn is_my_turn(&self) -> bool {
         if let Some(ref action) = self.action_required {
             return action.player_id == self.my_id;
@@ -152,10 +153,12 @@ impl PokerGameState {
         false
     }
 
+    #[allow(dead_code)]
     pub fn get_my_player(&self) -> Option<&Player> {
         self.players.get(&self.my_id)
     }
 
+    #[allow(dead_code)]
     pub fn get_my_player_mut(&mut self) -> Option<&mut Player> {
         self.players.get_mut(&self.my_id)
     }

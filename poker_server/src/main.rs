@@ -148,6 +148,7 @@ impl ShutdownState {
         self.should_shutdown.load(Ordering::Relaxed)
     }
 
+    #[allow(dead_code)]
     fn request_shutdown(&self) {
         self.should_shutdown.store(true, Ordering::Relaxed);
     }
@@ -232,7 +233,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let shutdown_flag = shutdown_state.should_shutdown.clone();
 
-    let signal_task = tokio::spawn(async move {
+    let _signal_task = tokio::spawn(async move {
         wait_for_shutdown_signal().await;
         shutdown_flag.store(true, Ordering::Relaxed);
     });
@@ -335,6 +336,63 @@ struct MessageHandler {
     server: Arc<Mutex<PokerServer>>,
     player_id: String,
     rate_limiter: Arc<RateLimiter>,
+    chat_rate_limiter: Arc<ChatRateLimiter>,
+}
+
+struct ChatRateLimiter {
+    messages: AtomicU64,
+    window_start: AtomicU64,
+}
+
+impl ChatRateLimiter {
+    const MAX_MESSAGES: u64 = 10;
+    const WINDOW_MS: u64 = 10000;
+
+    fn new() -> Self {
+        Self {
+            messages: AtomicU64::new(0),
+            window_start: AtomicU64::new(0),
+        }
+    }
+
+    fn allow(&self) -> bool {
+        let now_ms = Instant::now().elapsed().as_millis() as u64;
+
+        loop {
+            let window_start = self.window_start.load(Ordering::Acquire);
+            let elapsed = now_ms.saturating_sub(window_start);
+
+            if elapsed > Self::WINDOW_MS {
+                if self
+                    .window_start
+                    .compare_exchange(window_start, now_ms, Ordering::AcqRel, Ordering::Acquire)
+                    .is_ok()
+                {
+                    self.messages.store(0, Ordering::Release);
+                }
+                continue;
+            }
+
+            let current = self.messages.load(Ordering::Acquire);
+            if current >= Self::MAX_MESSAGES {
+                return false;
+            }
+
+            if self
+                .messages
+                .compare_exchange(current, current + 1, Ordering::AcqRel, Ordering::Acquire)
+                .is_ok()
+            {
+                return true;
+            }
+        }
+    }
+}
+
+impl Default for ChatRateLimiter {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl MessageHandler {
@@ -342,11 +400,13 @@ impl MessageHandler {
         server: Arc<Mutex<PokerServer>>,
         player_id: String,
         rate_limiter: Arc<RateLimiter>,
+        chat_rate_limiter: Arc<ChatRateLimiter>,
     ) -> Self {
         Self {
             server,
             player_id,
             rate_limiter,
+            chat_rate_limiter,
         }
     }
 
@@ -425,6 +485,11 @@ impl MessageHandler {
     }
 
     async fn handle_chat(&self, value: &serde_json::Value) {
+        if !self.chat_rate_limiter.allow() {
+            warn!("Player {} chat rate limited", self.player_id);
+            self.send_error("Chat rate limit exceeded. Please wait before sending more messages.");
+            return;
+        }
         if let Some(chat_text) = value["text"].as_str() {
             let sanitized_text = sanitize_chat_message(chat_text);
             let mut server = self.server.lock();
@@ -487,6 +552,7 @@ async fn handle_connection(
     let (write, read) = ws_stream.split();
 
     let rate_limiter = Arc::new(RateLimiter::new());
+    let chat_rate_limiter = Arc::new(ChatRateLimiter::new());
 
     let (tx, mut rx) = tokio::sync::mpsc::channel::<String>(CHANNEL_CAPACITY);
     let write_handle = tokio::spawn(async move {
@@ -510,7 +576,14 @@ async fn handle_connection(
     let server_for_cleanup = Arc::clone(&server);
     let player_id_clone = player_id.clone();
     let rate_limiter_clone = Arc::clone(&rate_limiter);
-    let handler = MessageHandler::new(server, player_id.clone(), rate_limiter_clone.clone());
+    let chat_rate_limiter_clone = Arc::clone(&chat_rate_limiter);
+    let rate_limiter_for_handler = Arc::clone(&rate_limiter_clone);
+    let handler = MessageHandler::new(
+        server,
+        player_id.clone(),
+        rate_limiter_for_handler,
+        chat_rate_limiter_clone,
+    );
 
     let read_task = tokio::spawn(async move {
         let mut stream = read;
