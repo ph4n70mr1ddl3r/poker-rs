@@ -16,10 +16,6 @@ const BROADCAST_SEND_TIMEOUT_MS: u64 = 5000;
 
 pub type PlayerId = String;
 
-fn lock_game<'a>(game: &'a Arc<Mutex<PokerGame>>) -> parking_lot::MutexGuard<'a, PokerGame> {
-    game.lock()
-}
-
 #[derive(Debug, Clone)]
 pub struct ServerPlayer {
     pub name: String,
@@ -122,14 +118,6 @@ impl PokerServer {
             player.connected = false;
             player.ws_sender = None;
         }
-    }
-
-    #[allow(dead_code)]
-    pub fn verify_session(&self, player_id: &str, session_token: &str) -> bool {
-        self.players
-            .get(player_id)
-            .map(|p| p.session_token == session_token)
-            .unwrap_or(false)
     }
 
     pub fn seat_player(&mut self, player_id: &str, game_id: &str) -> ServerResult<()> {

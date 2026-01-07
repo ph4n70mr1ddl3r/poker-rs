@@ -327,9 +327,18 @@ fn setup_network(mut commands: Commands, server_config: Res<ServerConfig>) {
 fn handle_network_messages(mut app_state: ResMut<AppState>, network_res: Res<NetworkResources>) {
     let rx = match network_res.rx.lock() {
         Ok(guard) => guard,
-        Err(_) => {
-            error!("Mutex poisoned, cannot receive messages");
-            return;
+        Err(poisoned) => {
+            error!("Mutex poisoned, attempting to recover...");
+            match poisoned.into_inner() {
+                Some(guard) => guard,
+                None => {
+                    error!("Cannot recover from mutex poisoning - channel lost");
+                    app_state
+                        .game_state
+                        .add_error("Network channel error - please restart".to_string());
+                    return;
+                }
+            }
         }
     };
     match rx.try_recv() {
@@ -780,11 +789,14 @@ fn convert_message(msg: crate::network::NetworkMessage) -> ClientNetworkMessage 
         crate::network::NetworkMessage::Error(msg) => ClientNetworkMessage::Error(msg),
         crate::network::NetworkMessage::Ping(timestamp) => {
             info!("Received Ping #{}", timestamp);
-            ClientNetworkMessage::Error(format!("Ping {}", timestamp))
+            let pong_msg = serde_json::json!({
+                "type": "Pong",
+                "timestamp": timestamp
+            });
+            let _ = network_res.ui_tx.send(pong_msg.to_string());
         }
         crate::network::NetworkMessage::Pong(timestamp) => {
             info!("Received Pong #{}", timestamp);
-            ClientNetworkMessage::Error(format!("Pong {}", timestamp))
         }
     }
 }

@@ -247,6 +247,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
 
     let mut active_connections: Vec<tokio::task::JoinHandle<()>> = Vec::new();
+    let mut cleanup_counter = 0;
 
     while !shutdown_state.is_shutdown_requested() {
         let result = listener.accept().await;
@@ -283,6 +284,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         });
 
         active_connections.push(handle);
+
+        cleanup_counter += 1;
+        if cleanup_counter >= 10 {
+            cleanup_counter = 0;
+            active_connections.retain(|handle| !handle.is_finished());
+        }
     }
 
     info!("Shutdown signal received, initiating graceful shutdown...");
@@ -717,8 +724,9 @@ mod tests {
     fn test_rate_limiter_window_reset() {
         let limiter = RateLimiter::new();
         for _ in 0..RateLimiter::MAX_MESSAGES {
-            assert!(!limiter.allow());
+            assert!(limiter.allow());
         }
+        assert!(!limiter.allow());
     }
 
     #[test]
