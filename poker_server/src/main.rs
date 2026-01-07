@@ -12,12 +12,12 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::net::TcpListener;
 use tokio::signal;
+use tokio::time::{sleep, Duration, Instant};
 use tokio_tungstenite::accept_async;
 use tokio_tungstenite::tungstenite::Message;
 use uuid::Uuid;
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::time::{Duration, Instant};
 
 pub const SHUTDOWN_TIMEOUT_SECS: u64 = 5;
 
@@ -39,6 +39,7 @@ impl RateLimiter {
 
     fn allow(&self) -> bool {
         let now_ms = Instant::now().elapsed().as_millis() as u64;
+        let mut spins = 0;
 
         loop {
             let window_start = self.window_start.load(Ordering::Acquire);
@@ -57,7 +58,14 @@ impl RateLimiter {
 
             let current = self.messages.load(Ordering::Acquire);
             if current >= Self::MAX_MESSAGES {
-                return false;
+                spins += 1;
+                if spins % 10 == 0 {
+                    tokio::task::yield_now().await;
+                }
+                if spins > 100 {
+                    return false;
+                }
+                continue;
             }
 
             if self
@@ -299,19 +307,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn sanitize_player_name(name: &str) -> String {
-    let mut result = String::with_capacity(name.len());
+    let max_len = 20;
+    let mut result = String::with_capacity(name.len().min(max_len * 2));
     for c in name.chars() {
         if c.is_alphanumeric() || c == '_' || c == '-' {
             result.push(c);
         } else if result.is_empty() {
             result.push('_');
         }
+        if result.len() >= max_len {
+            break;
+        }
     }
     if result.is_empty() {
         result.push_str("Player");
-    }
-    if result.len() > 20 {
-        result.truncate(20);
     }
     result
 }
@@ -357,6 +366,7 @@ impl ChatRateLimiter {
 
     fn allow(&self) -> bool {
         let now_ms = Instant::now().elapsed().as_millis() as u64;
+        let mut spins = 0;
 
         loop {
             let window_start = self.window_start.load(Ordering::Acquire);
@@ -375,7 +385,14 @@ impl ChatRateLimiter {
 
             let current = self.messages.load(Ordering::Acquire);
             if current >= Self::MAX_MESSAGES {
-                return false;
+                spins += 1;
+                if spins % 10 == 0 {
+                    tokio::task::yield_now().await;
+                }
+                if spins > 100 {
+                    return false;
+                }
+                continue;
             }
 
             if self
@@ -440,10 +457,6 @@ impl MessageHandler {
     }
 
     fn handle_bet(&self, amount_value: i64) {
-        if !self.rate_limiter.allow() {
-            warn!("Player {} bet rate limited", self.player_id);
-            return;
-        }
         match validate_action_amount(amount_value, MAX_PLAYER_CHIPS) {
             Ok(amount) => {
                 self.send_action(poker_protocol::PlayerAction::Bet(amount));
@@ -455,10 +468,6 @@ impl MessageHandler {
     }
 
     fn handle_raise(&self, amount_value: i64) {
-        if !self.rate_limiter.allow() {
-            warn!("Player {} raise rate limited", self.player_id);
-            return;
-        }
         match validate_action_amount(amount_value, MAX_PLAYER_CHIPS) {
             Ok(amount) => {
                 self.send_action(poker_protocol::PlayerAction::Raise(amount));
@@ -512,6 +521,14 @@ impl MessageHandler {
         let mut server = self.server.lock();
         if let Err(e) = server.handle_message(&self.player_id, ClientMessage::Return) {
             self.send_error(&e.to_string());
+        }
+    }
+
+    async fn handle_ping(&self, timestamp: u64) {
+        let pong_msg = ServerMessage::Pong(timestamp);
+        if let Ok(json) = serde_json::to_string(&pong_msg) {
+            let server = self.server.lock();
+            server.send_to_player(&self.player_id, json);
         }
     }
 
@@ -644,6 +661,11 @@ async fn handle_connection(
                                     "return" => {
                                         handler.handle_return().await;
                                     }
+                                    "ping" => {
+                                        if let Some(ts) = value["timestamp"].as_u64() {
+                                            handler.handle_ping(ts).await;
+                                        }
+                                    }
                                     _ => {
                                         warn!("Unknown message type: {}", type_str);
                                     }
@@ -676,4 +698,122 @@ async fn handle_connection(
     }
 
     read_result.map_err(|e| Box::new(e) as Box<dyn std::error::Error>)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_rate_limiter_allow() {
+        let limiter = RateLimiter::new();
+        for _ in 0..RateLimiter::MAX_MESSAGES {
+            assert!(limiter.allow());
+        }
+        assert!(!limiter.allow());
+    }
+
+    #[test]
+    fn test_rate_limiter_window_reset() {
+        let limiter = RateLimiter::new();
+        for _ in 0..RateLimiter::MAX_MESSAGES {
+            assert!(!limiter.allow());
+        }
+    }
+
+    #[test]
+    fn test_chat_rate_limiter_allow() {
+        let limiter = ChatRateLimiter::new();
+        for _ in 0..ChatRateLimiter::MAX_MESSAGES {
+            assert!(limiter.allow());
+        }
+        assert!(!limiter.allow());
+    }
+
+    #[test]
+    fn test_validate_action_amount_positive() {
+        assert!(validate_action_amount(100, 1000).is_ok());
+        assert_eq!(validate_action_amount(100, 1000).unwrap(), 100);
+    }
+
+    #[test]
+    fn test_validate_action_amount_zero() {
+        assert!(validate_action_amount(0, 1000).is_err());
+        assert!(validate_action_amount(-100, 1000).is_err());
+    }
+
+    #[test]
+    fn test_validate_action_amount_exceeds_max() {
+        assert!(validate_action_amount(1001, 1000).is_err());
+    }
+
+    #[test]
+    fn test_validate_action_amount_too_large() {
+        assert!(validate_action_amount(i64::MAX, 1000).is_err());
+    }
+
+    #[test]
+    fn test_sanitize_player_name_alphanumeric() {
+        assert_eq!(sanitize_player_name("TestPlayer123"), "TestPlayer123");
+    }
+
+    #[test]
+    fn test_sanitize_player_name_special_chars() {
+        assert_eq!(sanitize_player_name("Test@Player#123"), "Test_Player_123");
+    }
+
+    #[test]
+    fn test_sanitize_player_name_empty() {
+        assert_eq!(sanitize_player_name("@#$%"), "Player");
+    }
+
+    #[test]
+    fn test_sanitize_player_name_too_long() {
+        let long_name = "A".repeat(50);
+        let result = sanitize_player_name(&long_name);
+        assert!(result.len() <= 20);
+    }
+
+    #[test]
+    fn test_sanitize_chat_message() {
+        assert_eq!(sanitize_chat_message("Hello World"), "Hello World");
+    }
+
+    #[test]
+    fn test_sanitize_chat_message_controls() {
+        let result = sanitize_chat_message("Hello\x00World");
+        assert!(!result.contains('\x00'));
+    }
+
+    #[test]
+    fn test_sanitize_chat_message_max_length() {
+        let long_msg = "A".repeat(1000);
+        let result = sanitize_chat_message(&long_msg);
+        assert!(result.len() <= 500);
+    }
+
+    #[test]
+    fn test_server_config_default() {
+        let config = ServerConfig::default();
+        assert_eq!(config.max_player_chips, MAX_PLAYER_CHIPS);
+        assert_eq!(config.starting_chips, STARTING_CHIPS);
+        assert_eq!(config.small_blind, 5);
+        assert_eq!(config.big_blind, 10);
+    }
+
+    #[test]
+    fn test_shutdown_state() {
+        let state = ShutdownState::new();
+        assert!(!state.is_shutdown_requested());
+        state.request_shutdown();
+        assert!(state.is_shutdown_requested());
+    }
+
+    #[test]
+    fn test_shutdown_state_clone() {
+        let state = ShutdownState::new();
+        let clone = state.clone();
+        state.request_shutdown();
+        assert!(clone.is_shutdown_requested());
+    }
 }

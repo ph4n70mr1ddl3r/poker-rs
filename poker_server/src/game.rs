@@ -8,6 +8,8 @@ use rand::thread_rng;
 use std::collections::HashMap;
 use tokio::sync::broadcast;
 
+const MAX_BET_MULTIPLIER: i32 = 10;
+
 #[derive(Debug)]
 pub struct PokerGame {
     pub game_id: String,
@@ -337,6 +339,13 @@ impl PokerGame {
                 }
                 if amount > player.chips {
                     return Err(ServerError::BetExceedsChips(amount, player.chips));
+                }
+                let max_bet = self.pot * MAX_BET_MULTIPLIER;
+                if amount > max_bet && player.chips > max_bet {
+                    return Err(ServerError::InvalidBet(format!(
+                        "Bet exceeds maximum allowed: {} (pot: {})",
+                        max_bet, self.pot
+                    )));
                 }
                 if amount < self.min_raise && player.chips > self.min_raise {
                     return Err(ServerError::MinBet(self.min_raise));

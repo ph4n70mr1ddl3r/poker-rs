@@ -7,10 +7,12 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::broadcast;
 use tokio::sync::mpsc::Sender;
+use tokio::time::{timeout, Duration};
 use uuid::Uuid;
 
 pub const MAX_CONNECTIONS: usize = 100;
 pub const MAX_CONNECTIONS_PER_IP: usize = 5;
+const BROADCAST_SEND_TIMEOUT_MS: u64 = 5000;
 
 pub type PlayerId = String;
 
@@ -289,7 +291,7 @@ impl PokerServer {
         if let Some(game) = game {
             let pg = lock_game(game);
 
-            let player_ids: Vec<String> = pg
+            let players: Vec<(String, tokio::sync::mpsc::Sender<String>)> = pg
                 .get_players()
                 .keys()
                 .filter(|player_id| {
@@ -298,11 +300,6 @@ impl PokerServer {
                         .map(|p| p.connected)
                         .unwrap_or(false)
                 })
-                .cloned()
-                .collect();
-
-            let senders: Vec<(String, tokio::sync::mpsc::Sender<String>)> = player_ids
-                .iter()
                 .filter_map(|player_id| {
                     self.players
                         .get(player_id.as_str())
@@ -313,14 +310,17 @@ impl PokerServer {
 
             drop(pg);
 
-            let json = Arc::new(json);
-            for (player_id, sender) in senders {
-                let send_json = Arc::clone(&json);
-                tokio::spawn(async move {
-                    if let Err(e) = sender.send(send_json.as_str().to_string()).await {
-                        debug!("Failed to send to player {}: {}", player_id, e);
-                    }
-                });
+            if players.is_empty() {
+                return;
+            }
+
+            let timeout_duration = Duration::from_millis(BROADCAST_SEND_TIMEOUT_MS);
+
+            for (player_id, sender) in players {
+                let msg = json.clone();
+                if let Err(e) = timeout(timeout_duration, sender.send(msg)).await {
+                    error!("Timeout sending to player {}: {}", player_id, e);
+                }
             }
         }
     }
@@ -340,5 +340,102 @@ impl PokerServer {
 impl Default for PokerServer {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use poker_protocol::{ClientMessage, PlayerAction};
+
+    #[test]
+    fn test_server_new() {
+        let server = PokerServer::new();
+        assert!(server.players.is_empty());
+        assert!(server.games.is_empty());
+        assert_eq!(server.connection_count, 0);
+    }
+
+    #[test]
+    fn test_can_accept_connection() {
+        let server = PokerServer::new();
+        assert!(server.can_accept_connection("127.0.0.1"));
+        assert!(server.can_accept_connection("192.168.1.1"));
+    }
+
+    #[test]
+    fn test_connection_limits() {
+        let mut server = PokerServer::new();
+
+        for i in 0..MAX_CONNECTIONS {
+            assert!(server.can_accept_connection(&format!("192.168.1.{}", i)));
+            server.register_connection(&format!("192.168.1.{}", i));
+        }
+
+        assert!(!server.can_accept_connection("10.0.0.1"));
+    }
+
+    #[test]
+    fn test_per_ip_connection_limits() {
+        let mut server = PokerServer::new();
+
+        for i in 0..MAX_CONNECTIONS_PER_IP {
+            assert!(server.can_accept_connection("127.0.0.1"));
+            server.register_connection("127.0.0.1");
+        }
+
+        assert!(!server.can_accept_connection("127.0.0.1"));
+        assert!(server.can_accept_connection("192.168.1.1"));
+    }
+
+    #[test]
+    fn test_unregister_connection() {
+        let mut server = PokerServer::new();
+
+        server.register_connection("127.0.0.1");
+        assert_eq!(server.connection_count, 1);
+
+        server.unregister_connection("127.0.0.1");
+        assert_eq!(server.connection_count, 0);
+    }
+
+    #[test]
+    fn test_register_player() {
+        let mut server = PokerServer::new();
+        server.register_player("player1".to_string(), "TestPlayer".to_string(), 1000);
+
+        assert!(server.players.contains_key("player1"));
+        let player = server.players.get("player1").unwrap();
+        assert_eq!(player.name, "TestPlayer");
+        assert_eq!(player.chips, 1000);
+    }
+
+    #[test]
+    fn test_create_game() {
+        let mut server = PokerServer::new();
+        let game = server.create_game("test_game".to_string(), 5, 10);
+
+        assert!(server.games.contains_key("test_game"));
+        assert!(!game.lock().players.is_empty());
+    }
+
+    #[test]
+    fn test_verify_session() {
+        let mut server = PokerServer::new();
+        server.register_player("player1".to_string(), "TestPlayer".to_string(), 1000);
+
+        let token = server.players.get("player1").unwrap().session_token.clone();
+        assert!(server.verify_session("player1", &token));
+        assert!(!server.verify_session("player1", "wrong_token"));
+    }
+
+    #[test]
+    fn test_disconnect_player() {
+        let mut server = PokerServer::new();
+        server.register_player("player1".to_string(), "TestPlayer".to_string(), 1000);
+        server.disconnect_player("player1");
+
+        let player = server.players.get("player1").unwrap();
+        assert!(!player.connected);
     }
 }

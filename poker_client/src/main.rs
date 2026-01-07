@@ -1,5 +1,6 @@
 use bevy::prelude::*;
 use bevy_egui::{egui, EguiContexts, EguiPlugin};
+use chrono;
 use futures::SinkExt;
 use futures::StreamExt;
 use std::env;
@@ -13,6 +14,10 @@ use uuid::Uuid;
 pub const DEFAULT_SERVER_ADDR: &str = "ws://127.0.0.1:8080";
 pub const ENV_SERVER_ADDR: &str = "POKER_SERVER_URL";
 pub const CONNECTION_TIMEOUT_SECS: u64 = 10;
+pub const MAX_RECONNECT_ATTEMPTS: u32 = 10;
+pub const INITIAL_RECONNECT_DELAY_MS: u64 = 1000;
+pub const MAX_RECONNECT_DELAY_MS: u64 = 30000;
+pub const PING_INTERVAL_SECS: u64 = 30;
 
 mod game;
 mod network;
@@ -32,6 +37,37 @@ enum ClientNetworkMessage {
     Chat(crate::game::ChatMessage),
     Error(String),
     Disconnected,
+    Reconnecting(u32),
+}
+
+#[derive(Debug, Clone)]
+struct ReconnectState {
+    attempt: u32,
+    delay_ms: u64,
+}
+
+impl ReconnectState {
+    fn new() -> Self {
+        Self {
+            attempt: 0,
+            delay_ms: INITIAL_RECONNECT_DELAY_MS,
+        }
+    }
+
+    fn next_attempt(&mut self) -> Option<u64> {
+        if self.attempt >= MAX_RECONNECT_ATTEMPTS {
+            return None;
+        }
+        self.attempt += 1;
+        let delay = std::cmp::min(self.delay_ms, MAX_RECONNECT_DELAY_MS);
+        self.delay_ms = std::cmp::min(self.delay_ms * 2, MAX_RECONNECT_DELAY_MS);
+        Some(delay)
+    }
+
+    fn reset(&mut self) {
+        self.attempt = 0;
+        self.delay_ms = INITIAL_RECONNECT_DELAY_MS;
+    }
 }
 
 #[derive(Resource)]
@@ -54,6 +90,8 @@ struct NetworkResources {
     rx: Arc<Mutex<mpsc::Receiver<ClientNetworkMessage>>>,
     ui_tx: mpsc::Sender<String>,
     _runtime: Runtime,
+    server_addr: String,
+    reconnect_state: Arc<Mutex<ReconnectState>>,
 }
 
 fn main() {
@@ -96,6 +134,66 @@ fn get_server_address() -> String {
     })
 }
 
+async fn connect_with_retry(
+    server_addr: &str,
+    tx_for_network: &mpsc::Sender<ClientNetworkMessage>,
+    reconnect_state: &Arc<Mutex<ReconnectState>>,
+) -> Result<(), String> {
+    loop {
+        let delay = {
+            let mut state = reconnect_state.lock();
+            match state.next_attempt() {
+                Some(d) => d,
+                None => {
+                    let _ = tx_for_network.send(ClientNetworkMessage::Error(
+                        "Max reconnection attempts reached".to_string(),
+                    ));
+                    return Err("Max reconnection attempts reached".to_string());
+                }
+            }
+        };
+
+        info!(
+            "Attempting to connect to {} (attempt {})...",
+            server_addr,
+            { reconnect_state.lock().attempt }
+        );
+
+        let connection_result = timeout(
+            Duration::from_secs(CONNECTION_TIMEOUT_SECS),
+            tokio_tungstenite::connect_async(server_addr),
+        )
+        .await;
+
+        match connection_result {
+            Ok(Ok((ws_stream, _))) => {
+                info!("WebSocket handshake successful!");
+                reconnect_state.lock().reset();
+                return Ok((ws_stream, server_addr.to_string()));
+            }
+            Ok(Err(e)) => {
+                warn!("Connection attempt failed: {}", e);
+                let attempt = reconnect_state.lock().attempt;
+                let _ = tx_for_network.send(ClientNetworkMessage::Error(format!(
+                    "Connection failed (attempt {}): {}",
+                    attempt, e
+                )));
+            }
+            Err(_) => {
+                warn!("Connection timed out");
+                let attempt = reconnect_state.lock().attempt;
+                let _ = tx_for_network.send(ClientNetworkMessage::Error(format!(
+                    "Connection timed out (attempt {})",
+                    attempt
+                )));
+            }
+        }
+
+        info!("Waiting {}ms before retry...", delay);
+        tokio::time::sleep(Duration::from_millis(delay)).await;
+    }
+}
+
 #[derive(Resource)]
 struct ServerConfig {
     address: String,
@@ -117,104 +215,112 @@ fn setup_network(mut commands: Commands, server_config: Res<ServerConfig>) {
     let tx_for_network = tx.clone();
     let rx_arc = Arc::new(Mutex::new(rx));
     let server_addr = server_config.address.clone();
+    let reconnect_state = Arc::new(Mutex::new(ReconnectState::new()));
+
+    let reconnect_state_clone = reconnect_state.clone();
+    let server_addr_clone = server_addr.clone();
 
     rt.spawn(async move {
-        info!("Attempting to connect to {}...", server_addr);
+        let (ws_stream, connected_addr) =
+            match connect_with_retry(&server_addr_clone, &tx_for_network, &reconnect_state_clone)
+                .await
+            {
+                Ok(result) => result,
+                Err(e) => {
+                    error!("Failed to connect: {}", e);
+                    return;
+                }
+            };
 
-        let connection_result = timeout(
-            Duration::from_secs(CONNECTION_TIMEOUT_SECS),
-            tokio_tungstenite::connect_async(&server_addr),
-        )
-        .await;
+        info!("Connected to server at {}", connected_addr);
 
-        match connection_result {
-            Ok(Ok((ws_stream, _))) => {
-                info!("WebSocket handshake successful!");
+        let (mut write, read) = ws_stream.split();
 
-                let (mut write, read) = ws_stream.split();
+        let player_id = Uuid::new_v4().to_string();
+        let send_result = tx_for_network.send(ClientNetworkMessage::Connected(player_id.clone()));
+        info!("Sent Connected message: {:?}", send_result);
 
-                let player_id = Uuid::new_v4().to_string();
-                let send_result =
-                    tx_for_network.send(ClientNetworkMessage::Connected(player_id.clone()));
-                info!("Sent Connected message: {:?}", send_result);
+        let connect_msg = serde_json::json!({
+            "type": "connect",
+            "player_id": player_id
+        });
+        info!("Sending connect message: {}", connect_msg);
+        let _ = write.send(Message::Text(connect_msg.to_string())).await;
 
-                let connect_msg = serde_json::json!({
-                    "type": "connect",
-                    "player_id": player_id
-                });
-                info!("Sending connect message: {}", connect_msg);
-                let _ = write.send(Message::Text(connect_msg.to_string())).await;
+        let (write_tx, mut write_rx) = tokio::sync::mpsc::channel::<String>(100);
+        let write_task = tokio::spawn(async move {
+            while let Some(msg) = write_rx.recv().await {
+                info!("Sending to server: {}", msg);
+                let _ = write.send(Message::Text(msg)).await;
+            }
+        });
 
-                let (write_tx, mut write_rx) = tokio::sync::mpsc::channel::<String>(100);
-                let write_task = tokio::spawn(async move {
-                    while let Some(msg) = write_rx.recv().await {
-                        info!("Sending to server: {}", msg);
-                        let _ = write.send(Message::Text(msg)).await;
-                    }
-                });
-
-                let read_task = tokio::spawn(async move {
-                    let mut read = read;
-                    while let Some(result) = read.next().await {
-                        match result {
-                            Ok(Message::Text(text)) => {
-                                info!("Received from server: {} bytes", text.len());
-                                if let Ok(server_msg) = crate::network::parse_message(&text) {
-                                    info!("Parsed message type");
-                                    let client_msg = convert_message(server_msg);
-                                    let send_result = tx_for_network.send(client_msg);
-                                    info!("Sent to main thread: {:?}", send_result);
-                                }
-                            }
-                            Ok(Message::Close(_)) => {
-                                let _ = tx_for_network.send(ClientNetworkMessage::Disconnected);
-                                break;
-                            }
-                            Err(e) => {
-                                error!("WebSocket error: {}", e);
-                                let _ =
-                                    tx_for_network.send(ClientNetworkMessage::Error(e.to_string()));
-                                break;
-                            }
-                            _ => {}
+        let read_task = tokio::spawn(async move {
+            let mut read = read;
+            while let Some(result) = read.next().await {
+                match result {
+                    Ok(Message::Text(text)) => {
+                        info!("Received from server: {} bytes", text.len());
+                        if let Ok(server_msg) = crate::network::parse_message(&text) {
+                            info!("Parsed message type");
+                            let client_msg = convert_message(server_msg);
+                            let send_result = tx_for_network.send(client_msg);
+                            info!("Sent to main thread: {:?}", send_result);
                         }
                     }
-                });
-
-                let ui_rx = ui_rx;
-                let write_tx = write_tx;
-                let forward_task = tokio::spawn(async move {
-                    while let Ok(msg) = ui_rx.recv() {
-                        let _ = write_tx.send(msg).await;
+                    Ok(Message::Close(_)) => {
+                        let _ = tx_for_network.send(ClientNetworkMessage::Disconnected);
+                        break;
                     }
-                });
+                    Err(e) => {
+                        error!("WebSocket error: {}", e);
+                        let _ = tx_for_network.send(ClientNetworkMessage::Error(e.to_string()));
+                        break;
+                    }
+                    _ => {}
+                }
+            }
+        });
 
-                let _ = tokio::join!(read_task, write_task, forward_task);
+        let ui_rx = ui_rx;
+        let write_tx = write_tx;
+        let forward_task = tokio::spawn(async move {
+            while let Ok(msg) = ui_rx.recv() {
+                let _ = write_tx.send(msg).await;
             }
-            Ok(Err(e)) => {
-                error!("Failed to connect to server: {}", e);
-                let _ = tx_for_network.send(ClientNetworkMessage::Error(format!(
-                    "Connection failed: {}",
-                    e
-                )));
+        });
+
+        let mut ping_interval = tokio::time::interval(Duration::from_secs(PING_INTERVAL_SECS));
+        let ping_tx_for_ping = tx_for_network.clone();
+        let ping_task = tokio::spawn(async move {
+            loop {
+                ping_interval.tick().await;
+                let timestamp = chrono::Utc::now().timestamp_millis() as u64;
+                let ping_msg = serde_json::json!({
+                    "type": "Ping",
+                    "timestamp": timestamp
+                });
+                info!("Sending Ping #{}", timestamp);
+                if let Err(e) = write.send(Message::Text(ping_msg.to_string())).await {
+                    error!("Failed to send ping: {}", e);
+                    let _ = ping_tx_for_ping
+                        .send(ClientNetworkMessage::Error("Ping failed".to_string()));
+                    break;
+                }
             }
-            Err(_) => {
-                error!(
-                    "Connection timed out after {} seconds",
-                    CONNECTION_TIMEOUT_SECS
-                );
-                let _ = tx_for_network.send(ClientNetworkMessage::Error(format!(
-                    "Connection timed out after {} seconds",
-                    CONNECTION_TIMEOUT_SECS
-                )));
-            }
-        }
+        });
+
+        let _ = tokio::join!(read_task, write_task, forward_task, ping_task);
+
+        let _ = tx_for_network.send(ClientNetworkMessage::Disconnected);
     });
 
     commands.insert_resource(NetworkResources {
         rx: rx_arc,
         ui_tx,
         _runtime: rt,
+        server_addr,
+        reconnect_state,
     });
 }
 
@@ -247,6 +353,14 @@ fn handle_network_messages(mut app_state: ResMut<AppState>, network_res: Res<Net
                 ClientNetworkMessage::Disconnected => {
                     app_state.connected = false;
                     info!("Disconnected");
+                }
+                ClientNetworkMessage::Reconnecting(attempt) => {
+                    app_state.connected = false;
+                    info!("Reconnecting (attempt {})...", attempt);
+                    app_state.game_state.add_error(format!(
+                        "Disconnected. Reconnecting (attempt {})...",
+                        attempt
+                    ));
                 }
                 ClientNetworkMessage::PlayerDisconnected(player_id) => {
                     info!("Player disconnected: {}", player_id);
@@ -664,5 +778,13 @@ fn convert_message(msg: crate::network::NetworkMessage) -> ClientNetworkMessage 
         crate::network::NetworkMessage::Showdown(update) => ClientNetworkMessage::Showdown(update),
         crate::network::NetworkMessage::Chat(msg) => ClientNetworkMessage::Chat(msg),
         crate::network::NetworkMessage::Error(msg) => ClientNetworkMessage::Error(msg),
+        crate::network::NetworkMessage::Ping(timestamp) => {
+            info!("Received Ping #{}", timestamp);
+            ClientNetworkMessage::Error(format!("Ping {}", timestamp))
+        }
+        crate::network::NetworkMessage::Pong(timestamp) => {
+            info!("Received Pong #{}", timestamp);
+            ClientNetworkMessage::Error(format!("Pong {}", timestamp))
+        }
     }
 }

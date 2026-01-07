@@ -15,6 +15,8 @@ pub enum NetworkMessage {
     Showdown(ShowdownUpdate),
     Chat(ChatMessage),
     Error(String),
+    Ping(u64),
+    Pong(u64),
 }
 
 pub fn parse_message(text: &str) -> Result<NetworkMessage, String> {
@@ -153,6 +155,20 @@ fn parse_by_type(
                 .unwrap_or("Unknown error")
                 .to_string();
             Ok(NetworkMessage::Error(error_msg))
+        }
+        "Ping" | "ping" => {
+            let timestamp = value["timestamp"]
+                .as_u64()
+                .or(value["id"].as_u64())
+                .unwrap_or(0);
+            Ok(NetworkMessage::Ping(timestamp))
+        }
+        "Pong" | "pong" => {
+            let timestamp = value["timestamp"]
+                .as_u64()
+                .or(value["id"].as_u64())
+                .unwrap_or(0);
+            Ok(NetworkMessage::Pong(timestamp))
         }
         "Connected" | "connected" => {
             let player_id = value["player_id"]
@@ -305,6 +321,34 @@ mod tests {
                 assert_eq!(update.community_cards.len(), 5);
             }
             _ => panic!("Expected Showdown"),
+        }
+    }
+
+    #[test]
+    fn test_parse_ping() {
+        let json = r#"{"type": "Ping", "timestamp": 1234567890}"#;
+        let result = parse_message(json);
+        assert!(result.is_ok());
+        let msg = result.unwrap();
+        match msg {
+            NetworkMessage::Ping(timestamp) => {
+                assert_eq!(timestamp, 1234567890);
+            }
+            _ => panic!("Expected Ping"),
+        }
+    }
+
+    #[test]
+    fn test_parse_pong() {
+        let json = r#"{"type": "Pong", "timestamp": 1234567890}"#;
+        let result = parse_message(json);
+        assert!(result.is_ok());
+        let msg = result.unwrap();
+        match msg {
+            NetworkMessage::Pong(timestamp) => {
+                assert_eq!(timestamp, 1234567890);
+            }
+            _ => panic!("Expected Pong"),
         }
     }
 }
