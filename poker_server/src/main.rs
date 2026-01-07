@@ -727,6 +727,12 @@ mod tests {
             assert!(limiter.allow());
         }
         assert!(!limiter.allow());
+
+        std::thread::sleep(std::time::Duration::from_millis(
+            RateLimiter::WINDOW_MS + 10,
+        ));
+
+        assert!(limiter.allow());
     }
 
     #[test]

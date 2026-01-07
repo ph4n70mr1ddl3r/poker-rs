@@ -48,6 +48,7 @@ pub struct PokerGameState {
     pub chat_messages: VecDeque<ChatMessage>,
     pub errors: VecDeque<String>,
     pub my_id: String,
+    pub pending_chat: String,
 }
 
 impl PokerGameState {
@@ -65,6 +66,7 @@ impl PokerGameState {
             chat_messages: VecDeque::new(),
             errors: VecDeque::new(),
             my_id: String::new(),
+            pending_chat: String::new(),
         }
     }
 

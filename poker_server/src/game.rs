@@ -188,7 +188,6 @@ impl PokerGame {
             player.has_acted = false;
             player.is_all_in = false;
             player.is_folded = false;
-            player.has_acted_this_round = false;
         }
 
         self.community_cards.clear();
@@ -453,7 +452,9 @@ impl PokerGame {
         }
 
         for player in self.players.values_mut() {
-            player.has_acted = false;
+            if !player.has_acted {
+                player.has_acted = false;
+            }
         }
 
         if self.current_street != Street::Showdown && self.should_advance_street() {
@@ -791,24 +792,21 @@ impl PokerGame {
         }
 
         let mut straight_high = 0;
-        let mut current_high = ranks[0];
         let mut consecutive = 1;
 
         for i in 1..ranks.len() {
             if ranks[i] == ranks[i - 1] + 1 {
                 consecutive += 1;
-                current_high = ranks[i];
             } else if ranks[i] != ranks[i - 1] {
-                if consecutive >= 5 && current_high > straight_high {
-                    straight_high = current_high;
+                if consecutive >= 5 && ranks[i - 1] > straight_high {
+                    straight_high = ranks[i - 1];
                 }
                 consecutive = 1;
-                current_high = ranks[i];
             }
         }
 
-        if consecutive >= 5 && current_high > straight_high {
-            straight_high = current_high;
+        if consecutive >= 5 && ranks[ranks.len() - 1] > straight_high {
+            straight_high = ranks[ranks.len() - 1];
         }
 
         let has_wheel = ranks.contains(&2)

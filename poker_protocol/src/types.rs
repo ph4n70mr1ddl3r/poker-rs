@@ -198,7 +198,6 @@ pub struct PlayerState {
     pub is_all_in: bool,
     pub is_folded: bool,
     pub is_sitting_out: bool,
-    pub has_acted_this_round: bool,
 }
 
 impl PlayerState {
@@ -213,7 +212,6 @@ impl PlayerState {
             is_all_in: false,
             is_folded: false,
             is_sitting_out: false,
-            has_acted_this_round: false,
         }
     }
 }

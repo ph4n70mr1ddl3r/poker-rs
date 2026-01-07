@@ -1,6 +1,5 @@
 use bevy::prelude::*;
 use bevy_egui::{egui, EguiContexts, EguiPlugin};
-use chrono;
 use futures::SinkExt;
 use futures::StreamExt;
 use std::env;
@@ -74,6 +73,7 @@ impl ReconnectState {
 struct AppState {
     game_state: PokerGameState,
     connected: bool,
+    raise_amount: String,
 }
 
 impl Default for AppState {
@@ -81,6 +81,7 @@ impl Default for AppState {
         Self {
             game_state: PokerGameState::new(),
             connected: false,
+            raise_amount: String::new(),
         }
     }
 }
@@ -257,12 +258,20 @@ fn setup_network(mut commands: Commands, server_config: Res<ServerConfig>) {
 
         let read_task = tokio::spawn(async move {
             let mut read = read;
+            let ui_tx_for_pong = ui_tx.clone();
             while let Some(result) = read.next().await {
                 match result {
                     Ok(Message::Text(text)) => {
                         info!("Received from server: {} bytes", text.len());
                         if let Ok(server_msg) = crate::network::parse_message(&text) {
                             info!("Parsed message type");
+                            if let crate::network::NetworkMessage::Ping(timestamp) = server_msg {
+                                let pong_msg = serde_json::json!({
+                                    "type": "Pong",
+                                    "timestamp": timestamp
+                                });
+                                let _ = ui_tx_for_pong.send(pong_msg.to_string());
+                            }
                             let client_msg = convert_message(server_msg);
                             let send_result = tx_for_network.send(client_msg);
                             info!("Sent to main thread: {:?}", send_result);
@@ -295,12 +304,10 @@ fn setup_network(mut commands: Commands, server_config: Res<ServerConfig>) {
         let ping_task = tokio::spawn(async move {
             loop {
                 ping_interval.tick().await;
-                let timestamp = chrono::Utc::now().timestamp_millis() as u64;
                 let ping_msg = serde_json::json!({
                     "type": "Ping",
-                    "timestamp": timestamp
+                    "timestamp": 0
                 });
-                info!("Sending Ping #{}", timestamp);
                 if let Err(e) = write.send(Message::Text(ping_msg.to_string())).await {
                     error!("Failed to send ping: {}", e);
                     let _ = ping_tx_for_ping
@@ -373,6 +380,10 @@ fn handle_network_messages(mut app_state: ResMut<AppState>, network_res: Res<Net
                 }
                 ClientNetworkMessage::PlayerDisconnected(player_id) => {
                     info!("Player disconnected: {}", player_id);
+                    app_state.game_state.players.remove(&player_id);
+                    if app_state.game_state.my_id == player_id {
+                        app_state.connected = false;
+                    }
                 }
                 ClientNetworkMessage::PlayerConnected(update) => {
                     info!(
@@ -678,6 +689,34 @@ fn update_ui(
                         }
                     }
 
+                    ui.add_space(10.0);
+
+                    ui.label("Raise: $");
+                    let raise_input =
+                        egui::TextEdit::singleline(&mut app_state.raise_amount).desired_width(80.0);
+                    ui.add(raise_input);
+
+                    let raise_amount: i32 = app_state.raise_amount.parse().unwrap_or(0);
+
+                    let raise_btn = egui::Button::new("Raise")
+                        .fill(egui::Color32::from_rgb(0, 100, 200))
+                        .min_size(egui::Vec2::new(100.0, 40.0));
+                    let can_raise =
+                        raise_amount >= action_min_raise && raise_amount <= action_player_chips;
+                    if ui.add_enabled(can_raise, raise_btn).clicked() {
+                        if let Ok(msg) = serde_json::to_string(&serde_json::json!({
+                            "type": "action",
+                            "action": "Raise",
+                            "amount": raise_amount
+                        })) {
+                            let _ = network_res.ui_tx.send(msg);
+                            info!("Sent Raise action: ${}", raise_amount);
+                            app_state.raise_amount.clear();
+                        }
+                    }
+
+                    ui.add_space(10.0);
+
                     let allin_btn = egui::Button::new("All-In")
                         .fill(egui::Color32::from_rgb(255, 165, 0))
                         .min_size(egui::Vec2::new(100.0, 40.0));
@@ -713,6 +752,24 @@ fn update_ui(
                         egui::RichText::new(format!("{}: {}", msg.player_name, msg.text))
                             .size(12.0),
                     );
+                }
+                ui.add_space(10.0);
+                let chat_input = egui::TextEdit::singleline(&mut app_state.game_state.pending_chat)
+                    .desired_width(180.0)
+                    .hint_text("Type a message...");
+                if ui.add(chat_input).lost_focus() {
+                    if ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                        if !app_state.game_state.pending_chat.is_empty() {
+                            if let Ok(msg) = serde_json::to_string(&serde_json::json!({
+                                "type": "chat",
+                                "text": app_state.game_state.pending_chat
+                            })) {
+                                let _ = network_res.ui_tx.send(msg);
+                                info!("Sent chat message");
+                                app_state.game_state.pending_chat.clear();
+                            }
+                        }
+                    }
                 }
             },
         );
@@ -789,11 +846,6 @@ fn convert_message(msg: crate::network::NetworkMessage) -> ClientNetworkMessage 
         crate::network::NetworkMessage::Error(msg) => ClientNetworkMessage::Error(msg),
         crate::network::NetworkMessage::Ping(timestamp) => {
             info!("Received Ping #{}", timestamp);
-            let pong_msg = serde_json::json!({
-                "type": "Pong",
-                "timestamp": timestamp
-            });
-            let _ = network_res.ui_tx.send(pong_msg.to_string());
         }
         crate::network::NetworkMessage::Pong(timestamp) => {
             info!("Received Pong #{}", timestamp);
