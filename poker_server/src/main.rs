@@ -12,7 +12,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::net::TcpListener;
 use tokio::signal;
-use tokio::time::{sleep, Duration, Instant};
+use tokio::time::{Duration, Instant};
 use tokio_tungstenite::accept_async;
 use tokio_tungstenite::tungstenite::Message;
 use uuid::Uuid;
@@ -60,7 +60,7 @@ impl RateLimiter {
             if current >= Self::MAX_MESSAGES {
                 spins += 1;
                 if spins % 10 == 0 {
-                    tokio::task::yield_now().await;
+                    std::thread::sleep(std::time::Duration::from_millis(1));
                 }
                 if spins > 100 {
                     return false;
@@ -394,7 +394,7 @@ impl ChatRateLimiter {
             if current >= Self::MAX_MESSAGES {
                 spins += 1;
                 if spins % 10 == 0 {
-                    tokio::task::yield_now().await;
+                    std::thread::sleep(std::time::Duration::from_millis(1));
                 }
                 if spins > 100 {
                     return false;

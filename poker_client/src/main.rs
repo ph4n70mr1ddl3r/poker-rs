@@ -72,7 +72,7 @@ impl ReconnectState {
 struct AppState {
     game_state: PokerGameState,
     connected: bool,
-    raise_amount: String,
+    raise_amount: Mutex<String>,
 }
 
 impl Default for AppState {
@@ -80,9 +80,17 @@ impl Default for AppState {
         Self {
             game_state: PokerGameState::new(),
             connected: false,
-            raise_amount: String::new(),
+            raise_amount: Mutex::new(String::new()),
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+enum ConnectionState {
+    Disconnected,
+    Connecting,
+    Connected,
+    Reconnecting(u32),
 }
 
 #[derive(Resource)]
@@ -92,6 +100,8 @@ struct NetworkResources {
     _runtime: Runtime,
     server_addr: String,
     reconnect_state: Arc<Mutex<ReconnectState>>,
+    connection_state: Arc<Mutex<ConnectionState>>,
+    network_task: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
 }
 
 fn main() {
@@ -149,7 +159,7 @@ async fn connect_with_retry(
 > {
     loop {
         let delay = {
-            let state = reconnect_state.lock().map_err(|_| "Mutex poisoned")?;
+            let mut state = reconnect_state.lock().map_err(|_| "Mutex poisoned")?;
             match state.next_attempt() {
                 Some(d) => d,
                 None => {
@@ -230,7 +240,7 @@ fn setup_network(mut commands: Commands, server_config: Res<ServerConfig>) {
             commands.insert_resource(AppState {
                 game_state: PokerGameState::new(),
                 connected: false,
-                raise_amount: String::new(),
+                raise_amount: Mutex::new(String::new()),
             });
             return;
         }
@@ -244,11 +254,21 @@ fn setup_network(mut commands: Commands, server_config: Res<ServerConfig>) {
     let rx_arc = Arc::new(Mutex::new(rx));
     let server_addr = server_config.address.clone();
     let reconnect_state = Arc::new(Mutex::new(ReconnectState::new()));
+    let connection_state = Arc::new(Mutex::new(ConnectionState::Disconnected));
+    let network_task = Arc::new(Mutex::new(None::<tokio::task::JoinHandle<()>>));
 
     let reconnect_state_clone = reconnect_state.clone();
     let server_addr_clone = server_addr.clone();
+    let connection_state_clone = connection_state.clone();
+    let _network_task_clone = network_task.clone();
+    let tx_for_reconnect = tx.clone();
+    let ui_tx_for_task = ui_tx.clone();
 
-    rt.spawn(async move {
+    let task = rt.spawn(async move {
+        {
+            let mut state = connection_state_clone.lock().unwrap();
+            *state = ConnectionState::Connecting;
+        }
         let (ws_stream, connected_addr) =
             match connect_with_retry(&server_addr_clone, &tx_for_network, &reconnect_state_clone)
                 .await
@@ -256,11 +276,21 @@ fn setup_network(mut commands: Commands, server_config: Res<ServerConfig>) {
                 Ok(result) => result,
                 Err(e) => {
                     error!("Failed to connect: {}", e);
+                    let _ = tx_for_network.send(ClientNetworkMessage::Disconnected);
+                    let _ = tx_for_reconnect.send(ClientNetworkMessage::Error(e));
+                    {
+                        let mut state = connection_state_clone.lock().unwrap();
+                        *state = ConnectionState::Disconnected;
+                    }
                     return;
                 }
             };
 
         info!("Connected to server at {}", connected_addr);
+        {
+            let mut state = connection_state_clone.lock().unwrap();
+            *state = ConnectionState::Connected;
+        }
 
         let (mut write, read) = ws_stream.split();
 
@@ -278,9 +308,10 @@ fn setup_network(mut commands: Commands, server_config: Res<ServerConfig>) {
             }
         });
 
+        let tx_for_network_clone = tx_for_network.clone();
+        let ui_tx_for_pong = ui_tx_for_task.clone();
         let read_task = tokio::spawn(async move {
             let mut read = read;
-            let ui_tx_for_pong = ui_tx.clone();
             while let Some(result) = read.next().await {
                 match result {
                     Ok(Message::Text(text)) => {
@@ -295,17 +326,19 @@ fn setup_network(mut commands: Commands, server_config: Res<ServerConfig>) {
                                 let _ = ui_tx_for_pong.send(pong_msg.to_string());
                             }
                             let client_msg = convert_message(server_msg);
-                            let send_result = tx_for_network.send(client_msg);
+                            let send_result = tx_for_network_clone.send(client_msg);
                             debug!("Sent to main thread: {:?}", send_result);
                         }
                     }
                     Ok(Message::Close(_)) => {
-                        let _ = tx_for_network.send(ClientNetworkMessage::Disconnected);
+                        let _ = tx_for_network_clone.send(ClientNetworkMessage::Disconnected);
                         break;
                     }
                     Err(e) => {
                         error!("WebSocket error: {}", e);
-                        let _ = tx_for_network.send(ClientNetworkMessage::Error(e.to_string()));
+                        let _ =
+                            tx_for_network_clone.send(ClientNetworkMessage::Error(e.to_string()));
+                        let _ = tx_for_network_clone.send(ClientNetworkMessage::Disconnected);
                         break;
                     }
                     _ => {}
@@ -313,11 +346,11 @@ fn setup_network(mut commands: Commands, server_config: Res<ServerConfig>) {
             }
         });
 
-        let ui_rx = ui_rx;
-        let write_tx = write_tx;
+        let ui_rx_for_task = ui_rx;
+        let write_tx_for_forward = write_tx.clone();
         let forward_task = tokio::spawn(async move {
-            while let Ok(msg) = ui_rx.recv() {
-                let _ = write_tx.send(msg).await;
+            while let Ok(msg) = ui_rx_for_task.recv() {
+                let _ = write_tx_for_forward.send(msg).await;
             }
         });
 
@@ -330,10 +363,11 @@ fn setup_network(mut commands: Commands, server_config: Res<ServerConfig>) {
                     "type": "Ping",
                     "timestamp": 0
                 });
-                if let Err(e) = write.send(Message::Text(ping_msg.to_string())).await {
-                    error!("Failed to send ping: {}", e);
+                if let Err(e) = write_tx.send(ping_msg.to_string()).await {
+                    error!("Failed to queue ping: {}", e);
                     let _ = ping_tx_for_ping
                         .send(ClientNetworkMessage::Error("Ping failed".to_string()));
+                    let _ = ping_tx_for_ping.send(ClientNetworkMessage::Disconnected);
                     break;
                 }
             }
@@ -342,7 +376,16 @@ fn setup_network(mut commands: Commands, server_config: Res<ServerConfig>) {
         let _ = tokio::join!(read_task, write_task, forward_task, ping_task);
 
         let _ = tx_for_network.send(ClientNetworkMessage::Disconnected);
+        {
+            let mut state = connection_state_clone.lock().unwrap();
+            *state = ConnectionState::Disconnected;
+        }
     });
+
+    {
+        let mut task_guard = network_task.lock().unwrap();
+        *task_guard = Some(task);
+    }
 
     commands.insert_resource(NetworkResources {
         rx: rx_arc,
@@ -350,28 +393,25 @@ fn setup_network(mut commands: Commands, server_config: Res<ServerConfig>) {
         _runtime: rt,
         server_addr,
         reconnect_state,
+        connection_state,
+        network_task,
     });
 }
 
-fn handle_network_messages(mut app_state: ResMut<AppState>, network_res: Res<NetworkResources>) {
+fn handle_network_messages(
+    mut app_state: ResMut<AppState>,
+    network_res: Res<NetworkResources>,
+    mut commands: Commands,
+) {
     let rx = match network_res.rx.lock() {
         Ok(guard) => guard,
-        Err(poisoned) => {
-            error!("Mutex poisoned, attempting to recover...");
-            match poisoned.into_inner() {
-                Some(guard) => {
-                    warn!("Recovered from mutex poisoning");
-                    guard
-                }
-                None => {
-                    error!("Cannot recover from mutex poisoning - channel lost. Please restart the application.");
-                    app_state.game_state.add_error(
-                        "Network channel error - connection lost. Please restart.".to_string(),
-                    );
-                    app_state.connected = false;
-                    return;
-                }
-            }
+        Err(_) => {
+            error!("Mutex poisoned - network channel lost. Please restart the application.");
+            app_state
+                .game_state
+                .add_error("Network channel error - connection lost. Please restart.".to_string());
+            app_state.connected = false;
+            return;
         }
     };
     match rx.try_recv() {
@@ -394,7 +434,8 @@ fn handle_network_messages(mut app_state: ResMut<AppState>, network_res: Res<Net
                 }
                 ClientNetworkMessage::Disconnected => {
                     app_state.connected = false;
-                    info!("Disconnected");
+                    info!("Disconnected - triggering reconnection...");
+                    trigger_reconnection(&network_res, &mut commands);
                 }
                 ClientNetworkMessage::Reconnecting(attempt) => {
                     app_state.connected = false;
@@ -409,6 +450,7 @@ fn handle_network_messages(mut app_state: ResMut<AppState>, network_res: Res<Net
                     app_state.game_state.players.remove(&player_id);
                     if app_state.game_state.my_id == player_id {
                         app_state.connected = false;
+                        trigger_reconnection(&network_res, &mut commands);
                     }
                 }
                 ClientNetworkMessage::PlayerConnected(update) => {
@@ -462,7 +504,113 @@ fn handle_network_messages(mut app_state: ResMut<AppState>, network_res: Res<Net
         Err(mpsc::TryRecvError::Empty) => {}
         Err(mpsc::TryRecvError::Disconnected) => {
             info!("Channel disconnected!");
+            trigger_reconnection(&network_res, &mut commands);
         }
+    }
+}
+
+fn trigger_reconnection(network_res: &Res<NetworkResources>, _commands: &mut Commands) {
+    let server_addr = network_res.server_addr.clone();
+    let reconnect_state = network_res.reconnect_state.clone();
+    let connection_state = network_res.connection_state.clone();
+    let network_task = network_res.network_task.clone();
+
+    let attempt = {
+        let state = reconnect_state.lock().unwrap();
+        state.attempt + 1
+    };
+
+    {
+        let mut state = connection_state.lock().unwrap();
+        *state = ConnectionState::Reconnecting(attempt);
+    }
+
+    let rt = Runtime::new().expect("Failed to create runtime for reconnection");
+
+    let (tx, _) = mpsc::channel::<ClientNetworkMessage>();
+    let tx_for_network = tx.clone();
+    let ui_tx = network_res.ui_tx.clone();
+
+    let task = rt.spawn(async move {
+        let (ws_stream, connected_addr) =
+            match connect_with_retry(&server_addr, &tx_for_network, &reconnect_state).await {
+                Ok(result) => result,
+                Err(e) => {
+                    error!("Reconnection failed: {}", e);
+                    {
+                        let mut state = connection_state.lock().unwrap();
+                        *state = ConnectionState::Disconnected;
+                    }
+                    return;
+                }
+            };
+
+        info!("Reconnected to server at {}", connected_addr);
+        {
+            let mut state = connection_state.lock().unwrap();
+            *state = ConnectionState::Connected;
+        }
+
+        let (mut write, read) = ws_stream.split();
+
+        let connect_msg = serde_json::json!({
+            "type": "connect"
+        });
+        let _ = write.send(Message::Text(connect_msg.to_string())).await;
+
+        let (write_tx, mut write_rx) = tokio::sync::mpsc::channel::<String>(100);
+        let write_task = tokio::spawn(async move {
+            while let Some(msg) = write_rx.recv().await {
+                let _ = write.send(Message::Text(msg)).await;
+            }
+        });
+
+        let tx_clone = tx.clone();
+        let ui_tx_clone = ui_tx.clone();
+        let read_task = tokio::spawn(async move {
+            let mut read = read;
+            while let Some(result) = read.next().await {
+                match result {
+                    Ok(Message::Text(text)) => {
+                        if let Ok(server_msg) = crate::network::parse_message(&text) {
+                            if let crate::network::NetworkMessage::Ping(timestamp) = server_msg {
+                                let pong_msg = serde_json::json!({
+                                    "type": "Pong",
+                                    "timestamp": timestamp
+                                });
+                                let _ = ui_tx_clone.send(pong_msg.to_string());
+                            }
+                            let client_msg = convert_message(server_msg);
+                            let _ = tx_clone.send(client_msg);
+                        }
+                    }
+                    Ok(Message::Close(_)) => {
+                        let _ = tx_clone.send(ClientNetworkMessage::Disconnected);
+                        break;
+                    }
+                    Err(e) => {
+                        error!("WebSocket error during reconnection: {}", e);
+                        let _ = tx_clone.send(ClientNetworkMessage::Error(e.to_string()));
+                        let _ = tx_clone.send(ClientNetworkMessage::Disconnected);
+                        break;
+                    }
+                    _ => {}
+                }
+            }
+        });
+
+        let _ = tokio::join!(read_task, write_task);
+
+        let _ = tx.send(ClientNetworkMessage::Disconnected);
+        {
+            let mut state = connection_state.lock().unwrap();
+            *state = ConnectionState::Disconnected;
+        }
+    });
+
+    {
+        let mut task_guard = network_task.lock().unwrap();
+        *task_guard = Some(task);
     }
 }
 
@@ -718,21 +866,22 @@ fn update_ui(
                     ui.add_space(10.0);
 
                     ui.label("Raise: $");
-                    let raise_amount_str = app_state.raise_amount.clone();
+                    let raise_amount_str = app_state.raise_amount.lock().unwrap().clone();
+                    let mut raise_amount_guard = app_state.raise_amount.lock().unwrap();
                     let raise_input =
-                        egui::TextEdit::singleline(&mut app_state.raise_amount).desired_width(80.0);
+                        egui::TextEdit::singleline(&mut *raise_amount_guard).desired_width(80.0);
                     ui.add(raise_input);
 
                     let raise_amount_result: Result<i32, _> = raise_amount_str.parse();
-                    let raise_amount = raise_amount_result.unwrap_or(0);
-                    let is_valid_raise = raise_amount_result.is_ok() && raise_amount > 0;
+                    let raise_amount = raise_amount_result.as_ref().unwrap_or(&0);
+                    let is_valid_raise = raise_amount_result.is_ok() && *raise_amount > 0;
 
                     let raise_btn = egui::Button::new("Raise")
                         .fill(egui::Color32::from_rgb(0, 100, 200))
                         .min_size(egui::Vec2::new(100.0, 40.0));
                     let can_raise = is_valid_raise
-                        && raise_amount >= action_min_raise
-                        && raise_amount <= action_player_chips;
+                        && *raise_amount >= action_min_raise
+                        && *raise_amount <= action_player_chips;
                     if ui.add_enabled(can_raise, raise_btn).clicked() {
                         if let Ok(msg) = serde_json::to_string(&serde_json::json!({
                             "type": "action",
@@ -741,7 +890,8 @@ fn update_ui(
                         })) {
                             let _ = network_res.ui_tx.send(msg);
                             info!("Sent Raise action: ${}", raise_amount);
-                            app_state.raise_amount.clear();
+                            let mut guard = app_state.raise_amount.lock().unwrap();
+                            guard.clear();
                         }
                     }
 
@@ -784,12 +934,13 @@ fn update_ui(
                     );
                 }
                 ui.add_space(10.0);
-                let chat_input = egui::TextEdit::singleline(&mut app_state.game_state.pending_chat)
+                let mut pending_chat_guard = app_state.game_state.pending_chat.lock().unwrap();
+                let chat_input = egui::TextEdit::singleline(&mut *pending_chat_guard)
                     .desired_width(180.0)
                     .hint_text("Type a message...");
                 if ui.add(chat_input).lost_focus() {
                     if ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                        let chat_text = app_state.game_state.pending_chat.clone();
+                        let chat_text = pending_chat_guard.clone();
                         if !chat_text.is_empty() {
                             if let Ok(msg) = serde_json::to_string(&serde_json::json!({
                                 "type": "chat",
@@ -797,7 +948,7 @@ fn update_ui(
                             })) {
                                 let _ = network_res.ui_tx.send(msg);
                                 info!("Sent chat message");
-                                app_state.game_state.pending_chat.clear();
+                                pending_chat_guard.clear();
                             }
                         }
                     }

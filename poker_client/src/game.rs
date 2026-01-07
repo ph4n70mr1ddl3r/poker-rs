@@ -1,4 +1,5 @@
 use std::collections::{HashMap, VecDeque};
+use std::sync::Mutex;
 
 pub use poker_protocol::{
     ActionRequiredUpdate, ChatMessage, GameStateUpdate, PlayerConnectedUpdate, PlayerUpdate,
@@ -34,7 +35,6 @@ impl Player {
     }
 }
 
-#[derive(Debug, Clone)]
 pub struct PokerGameState {
     pub players: HashMap<String, Player>,
     pub community_cards: Vec<String>,
@@ -48,7 +48,7 @@ pub struct PokerGameState {
     pub chat_messages: VecDeque<ChatMessage>,
     pub errors: VecDeque<String>,
     pub my_id: String,
-    pub pending_chat: String,
+    pub pending_chat: Mutex<String>,
 }
 
 impl PokerGameState {
@@ -66,7 +66,25 @@ impl PokerGameState {
             chat_messages: VecDeque::new(),
             errors: VecDeque::new(),
             my_id: String::new(),
-            pending_chat: String::new(),
+            pending_chat: Mutex::new(String::new()),
+        }
+    }
+
+    pub fn clone(&self) -> Self {
+        Self {
+            players: self.players.clone(),
+            community_cards: self.community_cards.clone(),
+            pot: self.pot,
+            side_pots: self.side_pots.clone(),
+            current_street: self.current_street.clone(),
+            hand_number: self.hand_number,
+            dealer_position: self.dealer_position,
+            action_required: self.action_required.clone(),
+            showdown: self.showdown.clone(),
+            chat_messages: self.chat_messages.clone(),
+            errors: self.errors.clone(),
+            my_id: self.my_id.clone(),
+            pending_chat: Mutex::new(self.pending_chat.lock().unwrap().clone()),
         }
     }
 
