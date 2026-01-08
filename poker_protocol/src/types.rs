@@ -272,4 +272,170 @@ impl HandEvaluation {
             description: format!("High Card, {}", top_rank_display),
         }
     }
+
+    pub fn pair(cards: &[Card], pair_rank: u8) -> Self {
+        let mut ranks: Vec<_> = cards.iter().map(|c| c.rank as u8).collect();
+        ranks.sort();
+        ranks.reverse();
+
+        let kickers: Vec<_> = ranks.iter().filter(|&&r| r != pair_rank).collect();
+        let kickers: Vec<_> = kickers.iter().take(3).map(|&&r| r as i32).collect();
+
+        let pair_rank_display = Rank::from_u8(pair_rank)
+            .map(|r| r.to_string())
+            .unwrap_or_else(|| "Unknown".to_string());
+
+        Self {
+            rank: HandRank::Pair,
+            primary_rank: pair_rank as i32,
+            tiebreakers: kickers,
+            description: format!("Pair of {}", pair_rank_display),
+        }
+    }
+
+    pub fn two_pair(cards: &[Card], high_pair: u8, low_pair: u8) -> Self {
+        let mut ranks: Vec<_> = cards.iter().map(|c| c.rank as u8).collect();
+        ranks.sort();
+        ranks.reverse();
+
+        let kicker = ranks
+            .iter()
+            .filter(|&&r| r != high_pair && r != low_pair)
+            .max()
+            .map(|&r| r as i32)
+            .unwrap_or(0);
+
+        let high_display = Rank::from_u8(high_pair)
+            .map(|r| r.to_string())
+            .unwrap_or_else(|| "Unknown".to_string());
+        let low_display = Rank::from_u8(low_pair)
+            .map(|r| r.to_string())
+            .unwrap_or_else(|| "Unknown".to_string());
+
+        Self {
+            rank: HandRank::TwoPair,
+            primary_rank: high_pair as i32,
+            tiebreakers: vec![low_pair as i32, kicker],
+            description: format!("Two Pair, {} and {}", high_display, low_display),
+        }
+    }
+
+    pub fn three_of_a_kind(cards: &[Card], three_rank: u8) -> Self {
+        let mut ranks: Vec<_> = cards.iter().map(|c| c.rank as u8).collect();
+        ranks.sort();
+        ranks.reverse();
+
+        let kickers: Vec<_> = ranks
+            .iter()
+            .filter(|&&r| r != three_rank)
+            .take(2)
+            .map(|&r| r as i32)
+            .collect();
+
+        let three_rank_display = Rank::from_u8(three_rank)
+            .map(|r| r.to_string())
+            .unwrap_or_else(|| "Unknown".to_string());
+
+        Self {
+            rank: HandRank::ThreeOfAKind,
+            primary_rank: three_rank as i32,
+            tiebreakers: kickers,
+            description: format!("Three of a Kind, {}", three_rank_display),
+        }
+    }
+
+    pub fn straight(straight_high: u8) -> Self {
+        let is_wheel = straight_high == 6;
+        let description = if is_wheel {
+            "5-4-3-2-A (Wheel)".to_string()
+        } else {
+            let straight_high_display = Rank::from_u8(straight_high)
+                .map(|r| r.to_string())
+                .unwrap_or_else(|| "Unknown".to_string());
+            format!("{}", straight_high_display)
+        };
+
+        Self {
+            rank: HandRank::Straight,
+            primary_rank: straight_high as i32,
+            tiebreakers: vec![straight_high as i32],
+            description: format!("Straight, {}", description),
+        }
+    }
+
+    pub fn flush(flush_cards: &[Card]) -> Self {
+        let mut ranks: Vec<_> = flush_cards.iter().map(|c| c.rank as u8).collect();
+        ranks.sort();
+        ranks.reverse();
+
+        let top_rank = ranks.first().map(|&r| r as i32).unwrap_or(0);
+        let top_rank_display = ranks
+            .first()
+            .and_then(|&r| Rank::from_u8(r))
+            .map(|r| r.to_string())
+            .unwrap_or_else(|| "None".to_string());
+
+        Self {
+            rank: HandRank::Flush,
+            primary_rank: top_rank,
+            tiebreakers: ranks.iter().map(|&r| r as i32).collect(),
+            description: format!("Flush, {}", top_rank_display),
+        }
+    }
+
+    pub fn full_house(three_rank: u8, pair_rank: u8) -> Self {
+        let three_rank_display = Rank::from_u8(three_rank)
+            .map(|r| r.to_string())
+            .unwrap_or_else(|| "Unknown".to_string());
+        let pair_rank_display = Rank::from_u8(pair_rank)
+            .map(|r| r.to_string())
+            .unwrap_or_else(|| "Unknown".to_string());
+
+        Self {
+            rank: HandRank::FullHouse,
+            primary_rank: three_rank as i32,
+            tiebreakers: vec![pair_rank as i32],
+            description: format!(
+                "Full House, {} over {}",
+                three_rank_display, pair_rank_display
+            ),
+        }
+    }
+
+    pub fn four_of_a_kind(cards: &[Card], four_rank: u8) -> Self {
+        let mut ranks: Vec<_> = cards.iter().map(|c| c.rank as u8).collect();
+        ranks.sort();
+        ranks.reverse();
+
+        let kicker = ranks
+            .iter()
+            .filter(|&&r| r != four_rank)
+            .max()
+            .map(|&r| r as i32)
+            .unwrap_or(0);
+
+        let four_rank_display = Rank::from_u8(four_rank)
+            .map(|r| r.to_string())
+            .unwrap_or_else(|| "Unknown".to_string());
+
+        Self {
+            rank: HandRank::FourOfAKind,
+            primary_rank: four_rank as i32,
+            tiebreakers: vec![kicker],
+            description: format!("Four of a Kind, {}", four_rank_display),
+        }
+    }
+
+    pub fn straight_flush(straight_high: u8) -> Self {
+        let straight_high_display = Rank::from_u8(straight_high)
+            .map(|r| r.to_string())
+            .unwrap_or_else(|| "Unknown".to_string());
+
+        Self {
+            rank: HandRank::StraightFlush,
+            primary_rank: straight_high as i32,
+            tiebreakers: vec![straight_high as i32],
+            description: format!("Straight Flush, {}", straight_high_display),
+        }
+    }
 }

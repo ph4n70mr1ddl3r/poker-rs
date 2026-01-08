@@ -53,6 +53,7 @@ pub struct PokerServer {
 }
 
 impl PokerServer {
+    /// Creates a new empty poker server.
     pub fn new() -> Self {
         Self {
             players: HashMap::new(),
@@ -64,6 +65,13 @@ impl PokerServer {
         }
     }
 
+    /// Checks if a new connection can be accepted from the given IP.
+    ///
+    /// # Arguments
+    /// * `ip` - The IP address of the incoming connection
+    ///
+    /// # Returns
+    /// `true` if the connection can be accepted, `false` otherwise
     pub fn can_accept_connection(&self, ip: &str) -> bool {
         self.connection_count < MAX_CONNECTIONS
             && self
@@ -104,11 +112,22 @@ impl PokerServer {
         game
     }
 
+    /// Registers a new player with the server (without connecting).
+    ///
+    /// # Arguments
+    /// * `player_id` - Unique player identifier
+    /// * `name` - Player's display name
+    /// * `chips` - Starting chip amount
     pub fn register_player(&mut self, player_id: PlayerId, name: String, chips: i32) {
         let player = ServerPlayer::new(player_id.clone(), name, chips);
         self.players.insert(player_id, player);
     }
 
+    /// Connects a player to the server with a WebSocket sender.
+    ///
+    /// # Arguments
+    /// * `player_id` - The player to connect
+    /// * `ws_sender` - Channel sender for WebSocket messages to this player
     pub fn connect_player(&mut self, player_id: &str, ws_sender: Sender<String>) {
         if let Some(player) = self.players.get_mut(player_id) {
             player.connected = true;
@@ -117,6 +136,10 @@ impl PokerServer {
         }
     }
 
+    /// Disconnects a player from the server.
+    ///
+    /// # Arguments
+    /// * `player_id` - The player to disconnect
     pub fn disconnect_player(&mut self, player_id: &str) {
         if let Some(player) = self.players.get_mut(player_id) {
             player.connected = false;
@@ -196,6 +219,14 @@ impl PokerServer {
         Ok(())
     }
 
+    /// Handles a message from a player.
+    ///
+    /// # Arguments
+    /// * `player_id` - The player sending the message
+    /// * `message` - The message to process
+    ///
+    /// # Returns
+    /// Result indicating success or error
     pub fn handle_message(&mut self, player_id: &str, message: ClientMessage) -> ServerResult<()> {
         match message {
             ClientMessage::Connect => {
@@ -207,6 +238,7 @@ impl PokerServer {
             ClientMessage::Reconnect(existing_player_id) => {
                 if let Some(player) = self.players.get_mut(&existing_player_id) {
                     player.connected = true;
+                    player.session_token = Uuid::new_v4().to_string();
                     if let Some(session) = self.player_sessions.get(&existing_player_id) {
                         self.send_game_state_to_player(&existing_player_id, session)?;
                     }
@@ -224,6 +256,8 @@ impl PokerServer {
                 if let Some(game) = self.games.get(&session) {
                     let mut poker_game = lock_game(game);
                     poker_game.handle_action(player_id, action)?;
+                } else {
+                    return Err(ServerError::GameNotFound(session));
                 }
             }
             ClientMessage::Chat(text) => {
@@ -270,6 +304,11 @@ impl PokerServer {
         Ok(())
     }
 
+    /// Broadcasts a message to all connected players in a game.
+    ///
+    /// # Arguments
+    /// * `game_id` - The game to broadcast to
+    /// * `message` - The message to send
     pub fn broadcast_to_game(&self, game_id: &str, message: ServerMessage) {
         let json = match serde_json::to_string(&message) {
             Ok(json) => json,
@@ -320,12 +359,20 @@ impl PokerServer {
         }
     }
 
+    /// Sends a message to a specific player.
+    ///
+    /// # Arguments
+    /// * `player_id` - The target player
+    /// * `message` - The message to send
     pub fn send_to_player(&self, player_id: &str, message: String) {
         if let Some(player) = self.players.get(player_id) {
             if let Some(ref sender) = player.ws_sender {
                 let sender = sender.clone();
-                tokio::spawn(async move {
-                    let _ = sender.send(message).await;
+                let player_id = player_id.to_string();
+                let _ = tokio::spawn(async move {
+                    if let Err(e) = sender.send(message).await {
+                        error!("Failed to send message to player {}: {}", player_id, e);
+                    }
                 });
             }
         }

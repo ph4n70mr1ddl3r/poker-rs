@@ -30,6 +30,13 @@ pub struct PokerGame {
 }
 
 impl PokerGame {
+    /// Creates a new poker game instance.
+    ///
+    /// # Arguments
+    /// * `game_id` - Unique identifier for this game table
+    /// * `small_blind` - Small blind amount
+    /// * `big_blind` - Big blind amount
+    /// * `tx` - Broadcast channel sender for game messages
     pub fn new(
         game_id: String,
         small_blind: i32,
@@ -55,10 +62,17 @@ impl PokerGame {
         }
     }
 
+    /// Returns a reference to the current players in the game.
     pub fn get_players(&self) -> &HashMap<String, PlayerState> {
         &self.players
     }
 
+    /// Adds a new player to the game and starts a hand if enough players are present.
+    ///
+    /// # Arguments
+    /// * `player_id` - Unique player identifier
+    /// * `name` - Player's display name
+    /// * `chips` - Starting chip amount
     pub fn add_player(&mut self, player_id: String, name: String, chips: i32) {
         let player = PlayerState::new(player_id.clone(), name.clone(), chips);
         self.players.insert(player_id.clone(), player);
@@ -75,12 +89,20 @@ impl PokerGame {
         }
     }
 
+    /// Sets a player to sit out (they won't receive cards or be required to act).
+    ///
+    /// # Arguments
+    /// * `player_id` - The ID of the player to sit out
     pub fn sit_out(&mut self, player_id: &str) {
         if let Some(player) = self.players.get_mut(player_id) {
             player.is_sitting_out = true;
         }
     }
 
+    /// Returns a sitting-out player to the game.
+    ///
+    /// # Arguments
+    /// * `player_id` - The ID of the player to return
     pub fn return_to_game(&mut self, player_id: &str) {
         if let Some(player) = self.players.get_mut(player_id) {
             player.is_sitting_out = false;
@@ -122,8 +144,11 @@ impl PokerGame {
             return;
         }
 
-        let sb_player_id = active_player_ids[0].clone();
-        let bb_player_id = active_player_ids[1].clone();
+        let sb_idx = self.dealer_position % active_player_ids.len();
+        let bb_idx = (sb_idx + 1) % active_player_ids.len();
+
+        let sb_player_id = active_player_ids[sb_idx].clone();
+        let bb_player_id = active_player_ids[bb_idx].clone();
 
         let mut total_pot = 0;
 
@@ -293,6 +318,15 @@ impl PokerGame {
         self.players.get(&active_player_ids[0])
     }
 
+    /// Processes a player's action in the game.
+    ///
+    /// # Arguments
+    /// * `player_id` - The ID of the player taking the action
+    /// * `action` - The action being taken (fold, check, call, bet, raise, all-in)
+    ///
+    /// # Returns
+    /// * `Ok(())` if the action was processed successfully
+    /// * `Err(ServerError)` if the action is invalid or it's not the player's turn
     pub fn handle_action(&mut self, player_id: &str, action: PlayerAction) -> ServerResult<()> {
         let current_player = self
             .get_player_to_act()
@@ -654,9 +688,17 @@ impl PokerGame {
         }
 
         if all_cards.len() < 5 {
+            let top_rank = all_cards.iter().map(|c| c.rank as i32).max().unwrap_or(0);
+            let top_rank_display = all_cards
+                .iter()
+                .max_by_key(|c| c.rank as u8)
+                .and_then(|c| Rank::from_u8(c.rank as u8))
+                .map(|r| r.to_string())
+                .unwrap_or_else(|| "None".to_string());
+
             return HandEvaluation {
                 rank: HandRank::HighCard,
-                primary_rank: all_cards.iter().map(|c| c.rank as i32).max().unwrap_or(0),
+                primary_rank: top_rank,
                 tiebreakers: all_cards.iter().map(|c| c.rank as i32).collect(),
                 description: format!("High Card ({} cards)", all_cards.len()),
             };
@@ -694,11 +736,7 @@ impl PokerGame {
         if let Some(flush_cards) = self.get_flush_cards(cards) {
             return self
                 .check_straight_from_cards(&flush_cards)
-                .map(|mut eval| {
-                    eval.rank = HandRank::StraightFlush;
-                    eval.description = format!("Straight Flush, {}", eval.description);
-                    eval
-                });
+                .map(|eval| HandEvaluation::straight_flush(eval.primary_rank as u8));
         }
         None
     }
@@ -711,13 +749,7 @@ impl PokerGame {
         rank_counts.sort_by_key(|&(_, count)| std::cmp::Reverse(count));
 
         if let Some((rank, 4)) = rank_counts.first() {
-            let kicker = ranks.iter().filter(|&&r| r != *rank).max().unwrap_or(&0);
-            return Some(HandEvaluation {
-                rank: HandRank::FourOfAKind,
-                primary_rank: *rank as i32,
-                tiebreakers: vec![*kicker as i32],
-                description: format!("Four of a Kind, {}", Rank::from_u8(*rank).unwrap()),
-            });
+            return Some(HandEvaluation::four_of_a_kind(cards, *rank));
         }
         None
     }
@@ -735,32 +767,14 @@ impl PokerGame {
             .find(|&&(rank, count)| count >= 2 && Some(rank) != three_kind.map(|&(r, _)| r));
 
         if let (Some(&(three_rank, _)), Some(&(pair_rank, _))) = (three_kind, pair) {
-            return Some(HandEvaluation {
-                rank: HandRank::FullHouse,
-                primary_rank: three_rank as i32,
-                tiebreakers: vec![pair_rank as i32],
-                description: format!(
-                    "Full House, {} over {}",
-                    Rank::from_u8(three_rank).unwrap(),
-                    Rank::from_u8(pair_rank).unwrap()
-                ),
-            });
+            return Some(HandEvaluation::full_house(three_rank, pair_rank));
         }
         None
     }
 
     fn check_flush(&self, cards: &[Card]) -> Option<HandEvaluation> {
         if let Some(flush_cards) = self.get_flush_cards(cards) {
-            let mut sorted: Vec<_> = flush_cards.iter().map(|c| c.rank as u8).collect();
-            sorted.sort();
-            sorted.reverse();
-
-            return Some(HandEvaluation {
-                rank: HandRank::Flush,
-                primary_rank: sorted[0] as i32,
-                tiebreakers: sorted.iter().map(|&r| r as i32).collect(),
-                description: format!("Flush, {}", Rank::from_u8(sorted[0]).unwrap()),
-            });
+            return Some(HandEvaluation::flush(&flush_cards));
         }
         None
     }
@@ -799,12 +813,7 @@ impl PokerGame {
             && ranks.contains(&14);
 
         if has_wheel {
-            return Some(HandEvaluation {
-                rank: HandRank::Straight,
-                primary_rank: 6,
-                tiebreakers: vec![6, 5, 4, 3, 2],
-                description: "Straight, 5-4-3-2-A (Wheel)".to_string(),
-            });
+            return Some(HandEvaluation::straight(6));
         }
 
         let mut straight_high = 0;
@@ -826,12 +835,7 @@ impl PokerGame {
         }
 
         if straight_high > 0 {
-            return Some(HandEvaluation {
-                rank: HandRank::Straight,
-                primary_rank: straight_high as i32,
-                tiebreakers: vec![straight_high as i32],
-                description: format!("Straight, {}", Rank::from_u8(straight_high).unwrap()),
-            });
+            return Some(HandEvaluation::straight(straight_high));
         }
 
         None
@@ -845,16 +849,7 @@ impl PokerGame {
         rank_counts.sort_by_key(|&(_, count)| std::cmp::Reverse(count));
 
         if let Some((rank, 3)) = rank_counts.first() {
-            let mut kickers: Vec<_> = ranks.iter().filter(|&&r| r != *rank).collect();
-            kickers.sort();
-            kickers.reverse();
-
-            return Some(HandEvaluation {
-                rank: HandRank::ThreeOfAKind,
-                primary_rank: *rank as i32,
-                tiebreakers: kickers.iter().take(2).map(|&&r| r as i32).collect(),
-                description: format!("Three of a Kind, {}", Rank::from_u8(*rank).unwrap()),
-            });
+            return Some(HandEvaluation::three_of_a_kind(cards, *rank));
         }
         None
     }
@@ -874,22 +869,7 @@ impl PokerGame {
         if pairs.len() >= 2 {
             let high_pair = pairs[0].0;
             let low_pair = pairs[1].0;
-            let kicker = ranks
-                .iter()
-                .filter(|&&r| r != high_pair && r != low_pair)
-                .max()
-                .unwrap_or(&0);
-
-            return Some(HandEvaluation {
-                rank: HandRank::TwoPair,
-                primary_rank: high_pair as i32,
-                tiebreakers: vec![low_pair as i32, *kicker as i32],
-                description: format!(
-                    "Two Pair, {} and {}",
-                    Rank::from_u8(high_pair).unwrap(),
-                    Rank::from_u8(low_pair).unwrap()
-                ),
-            });
+            return Some(HandEvaluation::two_pair(cards, high_pair, low_pair));
         }
         None
     }
@@ -902,16 +882,7 @@ impl PokerGame {
         rank_counts.sort_by_key(|&(_, count)| std::cmp::Reverse(count));
 
         if let Some((rank, 2)) = rank_counts.first() {
-            let mut kickers: Vec<_> = ranks.iter().filter(|&&r| r != *rank).collect();
-            kickers.sort();
-            kickers.reverse();
-
-            return Some(HandEvaluation {
-                rank: HandRank::Pair,
-                primary_rank: *rank as i32,
-                tiebreakers: kickers.iter().take(3).map(|&&r| r as i32).collect(),
-                description: format!("Pair of {}", Rank::from_u8(*rank).unwrap()),
-            });
+            return Some(HandEvaluation::pair(cards, *rank));
         }
         None
     }
