@@ -568,7 +568,7 @@ async fn handle_connection(
     let write_handle = tokio::spawn(async move {
         let mut sink = write;
         while let Some(msg) = rx.recv().await {
-            if let Err(e) = sink.send(Message::Text(msg)).await {
+            if let Err(e) = sink.send(Message::Text(msg.into())).await {
                 error!("Failed to send message: {}", e);
                 break;
             }

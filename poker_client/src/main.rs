@@ -106,6 +106,10 @@ struct NetworkResources {
     network_task: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
 }
 
+fn try_lock_mutex<T>(mutex: &Mutex<T>) -> Result<std::sync::MutexGuard<'_, T>, String> {
+    mutex.lock().map_err(|_| "Mutex poisoned".to_string())
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let client_name = if args.len() > 1 {
@@ -323,7 +327,10 @@ fn setup_network(mut commands: Commands, server_config: Res<ServerConfig>) {
             "type": "connect"
         });
         info!("Sending connect message: {}", connect_msg);
-        if let Err(e) = write.send(Message::Text(connect_msg.to_string())).await {
+        if let Err(e) = write
+            .send(Message::Text(connect_msg.to_string().into()))
+            .await
+        {
             error!("Failed to send connect message: {}", e);
             let _ = tx.send(ClientNetworkMessage::Error(
                 "Failed to send connect message".to_string(),
@@ -336,7 +343,7 @@ fn setup_network(mut commands: Commands, server_config: Res<ServerConfig>) {
         let write_task = tokio::spawn(async move {
             while let Some(msg) = write_rx.recv().await {
                 debug!("Sending to server: {} bytes", msg.len());
-                let _ = write.send(Message::Text(msg)).await;
+                let _ = write.send(Message::Text(msg.into())).await;
             }
         });
 
@@ -617,12 +624,14 @@ fn trigger_reconnection(network_res: &Res<NetworkResources>, _commands: &mut Com
         let connect_msg = serde_json::json!({
             "type": "connect"
         });
-        let _ = write.send(Message::Text(connect_msg.to_string())).await;
+        let _ = write
+            .send(Message::Text(connect_msg.to_string().into()))
+            .await;
 
         let (_write_tx, mut write_rx) = tokio::sync::mpsc::channel::<String>(100);
         let write_task = tokio::spawn(async move {
             while let Some(msg) = write_rx.recv().await {
-                let _ = write.send(Message::Text(msg)).await;
+                let _ = write.send(Message::Text(msg.into())).await;
             }
         });
 
@@ -939,8 +948,20 @@ fn update_ui(
                     ui.add_space(10.0);
 
                     ui.label("Raise: $");
-                    let raise_amount_str = app_state.raise_amount.lock().unwrap().clone();
-                    let mut raise_amount_guard = app_state.raise_amount.lock().unwrap();
+                    let raise_amount_str = match try_lock_mutex(&app_state.raise_amount) {
+                        Ok(guard) => guard.clone(),
+                        Err(e) => {
+                            error!("Failed to lock raise_amount: {}", e);
+                            String::new()
+                        }
+                    };
+                    let mut raise_amount_guard = match try_lock_mutex(&app_state.raise_amount) {
+                        Ok(guard) => guard,
+                        Err(e) => {
+                            error!("Failed to lock raise_amount: {}", e);
+                            return;
+                        }
+                    };
                     let raise_input =
                         egui::TextEdit::singleline(&mut *raise_amount_guard).desired_width(80.0);
                     ui.add(raise_input);
@@ -959,12 +980,13 @@ fn update_ui(
                         if let Ok(msg) = serde_json::to_string(&serde_json::json!({
                             "type": "action",
                             "action": "Raise",
-                            "amount": raise_amount
+                             "amount": raise_amount
                         })) {
                             let _ = network_res.ui_tx.send(msg);
                             info!("Sent Raise action: ${}", raise_amount);
-                            let mut guard = app_state.raise_amount.lock().unwrap();
-                            guard.clear();
+                            if let Ok(mut guard) = try_lock_mutex(&app_state.raise_amount) {
+                                guard.clear();
+                            }
                         }
                     }
 
@@ -1007,7 +1029,14 @@ fn update_ui(
                     );
                 }
                 ui.add_space(10.0);
-                let mut pending_chat_guard = app_state.game_state.pending_chat.lock().unwrap();
+                let mut pending_chat_guard =
+                    match try_lock_mutex(&app_state.game_state.pending_chat) {
+                        Ok(guard) => guard,
+                        Err(e) => {
+                            error!("Failed to lock pending_chat: {}", e);
+                            return;
+                        }
+                    };
                 let chat_input = egui::TextEdit::singleline(&mut *pending_chat_guard)
                     .desired_width(180.0)
                     .hint_text("Type a message...");

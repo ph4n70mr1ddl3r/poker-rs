@@ -428,6 +428,7 @@ impl Default for PokerServer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use poker_protocol::PlayerAction;
 
     #[test]
     fn test_server_new() {
@@ -531,5 +532,104 @@ mod tests {
 
         server.set_session_expiry_hours(0);
         assert!(!server.verify_session("player1", &token));
+    }
+
+    #[tokio::test]
+    async fn test_handle_reconnect_message() {
+        let mut server = PokerServer::new();
+        server.register_player("player1".to_string(), "TestPlayer".to_string(), 1000);
+        server.create_game("main_table".to_string(), 5, 10);
+
+        {
+            let player = server.players.get_mut("player1").unwrap();
+            player.connected = false;
+        }
+
+        let result =
+            server.handle_message("player1", ClientMessage::Reconnect("player1".to_string()));
+        assert!(result.is_ok());
+
+        let player = server.players.get("player1").unwrap();
+        assert!(player.connected);
+    }
+
+    #[tokio::test]
+    async fn test_handle_reconnect_invalid_player() {
+        let mut server = PokerServer::new();
+        server.create_game("main_table".to_string(), 5, 10);
+
+        let result = server.handle_message(
+            "nonexistent",
+            ClientMessage::Reconnect("nonexistent".to_string()),
+        );
+        assert!(result.is_err());
+        assert!(matches!(
+            result.unwrap_err(),
+            ServerError::PlayerNotFound(_)
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_handle_action_player_not_in_game() {
+        let mut server = PokerServer::new();
+
+        let result = server.handle_message("player1", ClientMessage::Action(PlayerAction::Fold));
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), ServerError::PlayerNotInGame));
+    }
+
+    #[tokio::test]
+    async fn test_handle_chat_message() {
+        let mut server = PokerServer::new();
+        server.register_player("player1".to_string(), "TestPlayer".to_string(), 1000);
+        server.create_game("main_table".to_string(), 5, 10);
+        server
+            .handle_message("player1", ClientMessage::Connect)
+            .unwrap();
+
+        let result = server.handle_message(
+            "player1",
+            ClientMessage::Chat("Hello everyone!".to_string()),
+        );
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_handle_sit_out() {
+        let mut server = PokerServer::new();
+        server.register_player("player1".to_string(), "TestPlayer".to_string(), 1000);
+        server.create_game("main_table".to_string(), 5, 10);
+        server
+            .handle_message("player1", ClientMessage::Connect)
+            .unwrap();
+
+        let result = server.handle_message("player1", ClientMessage::SitOut);
+        assert!(result.is_ok());
+
+        let game = server.games.get("main_table").unwrap();
+        let poker_game = game.lock();
+        let player = poker_game.players.get("player1");
+        assert!(player.map(|p| p.is_sitting_out).unwrap_or(false));
+    }
+
+    #[tokio::test]
+    async fn test_handle_return() {
+        let mut server = PokerServer::new();
+        server.register_player("player1".to_string(), "TestPlayer".to_string(), 1000);
+        server.create_game("main_table".to_string(), 5, 10);
+        server
+            .handle_message("player1", ClientMessage::Connect)
+            .unwrap();
+        server
+            .handle_message("player1", ClientMessage::SitOut)
+            .unwrap();
+
+        let result = server.handle_message("player1", ClientMessage::Return);
+        assert!(result.is_ok());
+
+        let game = server.games.get("main_table").unwrap();
+        let poker_game = game.lock();
+        let player = poker_game.players.get("player1");
+        assert!(!player.map(|p| p.is_sitting_out).unwrap_or(true));
     }
 }
