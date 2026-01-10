@@ -9,9 +9,9 @@ use rand::thread_rng;
 use std::collections::HashMap;
 use tokio::sync::broadcast;
 
-const MAX_BET_MULTIPLIER: i32 = 10;
+use crate::MAX_BET_MULTIPLIER;
+
 const MAX_POT: i32 = i32::MAX / 2;
-const MAX_CHIPS: i32 = i32::MAX / 2;
 
 const MAX_BROADCAST_RETRIES: u32 = 3;
 const BROADCAST_RETRY_DELAY_MS: u64 = 10;
@@ -104,22 +104,6 @@ impl PokerGame {
             return None;
         }
         Some(new_pot)
-    }
-
-    /// Safely checks and sets player chips with overflow protection
-    fn add_player_chips(&mut self, player_id: &str, amount: i32) -> ServerResult<()> {
-        if amount <= 0 {
-            return Err(ServerError::InvalidAmount);
-        }
-        if let Some(player) = self.players.get_mut(player_id) {
-            player.chips = player.chips.checked_add(amount).ok_or_else(|| {
-                ServerError::InvalidBet("Player chips exceed maximum".to_string())
-            })?;
-            if player.chips > MAX_CHIPS {
-                player.chips = MAX_CHIPS;
-            }
-        }
-        Ok(())
     }
 
     /// Sets the maximum bet per hand.

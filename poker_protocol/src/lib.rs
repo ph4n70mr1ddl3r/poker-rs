@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use std::fmt;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -24,34 +25,52 @@ struct NonceEntry {
 
 pub struct NonceCache {
     entries: Arc<Mutex<Vec<NonceEntry>>>,
+    nonces: Arc<Mutex<HashSet<u64>>>,
 }
 
 impl NonceCache {
     pub fn new() -> Self {
         Self {
             entries: Arc::new(Mutex::new(Vec::new())),
+            nonces: Arc::new(Mutex::new(HashSet::new())),
         }
     }
 
     pub fn is_duplicate(&self, nonce: u64) -> bool {
         let now = Instant::now();
         let expiry_duration = Duration::from_millis(NONCE_EXPIRY_MS);
-        let mut entries = match self.entries.lock() {
-            Ok(guard) => guard,
-            Err(poisoned) => {
-                let mut entries = poisoned.into_inner();
+        let (mut entries, mut nonces) = match (self.entries.lock(), self.nonces.lock()) {
+            (Ok(entries), Ok(nonces)) => (entries, nonces),
+            (Err(poisoned_entries), Ok(nonces)) => {
+                let mut entries = poisoned_entries.into_inner();
                 entries.clear();
-                return false;
+                (entries, nonces)
+            }
+            (Ok(entries), Err(poisoned_nonces)) => {
+                let mut nonces = poisoned_nonces.into_inner();
+                nonces.clear();
+                (entries, nonces)
+            }
+            (Err(poisoned_entries), Err(poisoned_nonces)) => {
+                let mut entries = poisoned_entries.into_inner();
+                let mut nonces = poisoned_nonces.into_inner();
+                entries.clear();
+                nonces.clear();
+                (entries, nonces)
             }
         };
 
         entries.retain(|entry| now.duration_since(entry.timestamp) < expiry_duration);
+        nonces.retain(|&entry_nonce| entries.iter().any(|e| e.nonce == entry_nonce));
 
-        if entries.iter().any(|entry| entry.nonce == nonce) {
+        if nonces.contains(&nonce) {
             return true;
         }
 
         if entries.len() >= NONCE_CACHE_SIZE {
+            if let Some(oldest) = entries.first() {
+                nonces.remove(&oldest.nonce);
+            }
             entries.remove(0);
         }
 
@@ -59,6 +78,7 @@ impl NonceCache {
             nonce,
             timestamp: now,
         });
+        nonces.insert(nonce);
 
         false
     }

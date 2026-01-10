@@ -133,7 +133,7 @@ fn validate_action_amount(amount: i64, max_allowed: i32) -> Result<i32, String> 
     Ok(amount as i32)
 }
 
-const MAX_BET_MULTIPLIER: i32 = 10;
+pub const MAX_BET_MULTIPLIER: i32 = 10;
 const MAX_MESSAGE_SIZE: usize = 4096;
 const MAX_PLAYER_CHIPS: i32 = 1000000;
 const STARTING_CHIPS: i32 = 1000;
