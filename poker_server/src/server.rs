@@ -20,6 +20,7 @@ pub const MAX_CONNECTIONS: usize = 100;
 pub const MAX_CONNECTIONS_PER_IP: usize = 5;
 const BROADCAST_SEND_TIMEOUT_MS: u64 = 5000;
 const MAX_BROADCAST_TASKS: usize = 50;
+const MAX_SEND_TASKS: usize = 100;
 
 pub type PlayerId = String;
 
@@ -65,6 +66,7 @@ pub struct PokerServer {
     ip_connections: HashMap<String, usize>,
     session_expiry_hours: u64,
     broadcast_semaphore: Arc<Semaphore>,
+    send_semaphore: Arc<Semaphore>,
 }
 
 impl PokerServer {
@@ -79,6 +81,7 @@ impl PokerServer {
             ip_connections: HashMap::new(),
             session_expiry_hours: 24,
             broadcast_semaphore: Arc::new(Semaphore::new(MAX_BROADCAST_TASKS)),
+            send_semaphore: Arc::new(Semaphore::new(MAX_SEND_TASKS)),
         }
     }
 
@@ -396,7 +399,9 @@ impl PokerServer {
             if let Some(ref sender) = player.ws_sender {
                 let sender = sender.clone();
                 let player_id = player_id.to_string();
+                let sem = Arc::clone(&self.send_semaphore);
                 tokio::spawn(async move {
+                    let _permit = sem.acquire().await;
                     if let Err(e) = sender.send(message).await {
                         error!("Failed to send message to player {}: {}", player_id, e);
                     }
