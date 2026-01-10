@@ -21,23 +21,24 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 pub const SHUTDOWN_TIMEOUT_SECS: u64 = 5;
 
-struct RateLimiter {
+pub struct WindowedRateLimiter {
     messages: AtomicU64,
     window_start: AtomicU64,
+    max_messages: u64,
+    window_ms: u64,
 }
 
-impl RateLimiter {
-    const MAX_MESSAGES: u64 = 100;
-    const WINDOW_MS: u64 = 1000;
-
-    fn new() -> Self {
+impl WindowedRateLimiter {
+    pub fn new(max_messages: u64, window_ms: u64) -> Self {
         Self {
             messages: AtomicU64::new(0),
             window_start: AtomicU64::new(0),
+            max_messages,
+            window_ms,
         }
     }
 
-    fn allow(&self) -> bool {
+    pub fn allow(&self) -> bool {
         let now_ms = Instant::now().elapsed().as_millis() as u64;
         let mut spins = 0;
 
@@ -45,7 +46,7 @@ impl RateLimiter {
             let window_start = self.window_start.load(Ordering::Acquire);
             let elapsed = now_ms.saturating_sub(window_start);
 
-            if elapsed > Self::WINDOW_MS {
+            if elapsed > self.window_ms {
                 if self
                     .window_start
                     .compare_exchange(window_start, now_ms, Ordering::AcqRel, Ordering::Acquire)
@@ -57,7 +58,7 @@ impl RateLimiter {
             }
 
             let current = self.messages.load(Ordering::Acquire);
-            if current >= Self::MAX_MESSAGES {
+            if current >= self.max_messages {
                 spins += 1;
                 if spins % 10 == 0 {
                     std::thread::sleep(std::time::Duration::from_millis(1));
@@ -79,7 +80,51 @@ impl RateLimiter {
     }
 }
 
+impl Default for WindowedRateLimiter {
+    fn default() -> Self {
+        Self::new(100, 1000)
+    }
+}
+
+struct RateLimiter {
+    inner: WindowedRateLimiter,
+}
+
+impl RateLimiter {
+    fn new() -> Self {
+        Self {
+            inner: WindowedRateLimiter::new(100, 1000),
+        }
+    }
+
+    fn allow(&self) -> bool {
+        self.inner.allow()
+    }
+}
+
 impl Default for RateLimiter {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+struct ChatRateLimiter {
+    inner: WindowedRateLimiter,
+}
+
+impl ChatRateLimiter {
+    fn new() -> Self {
+        Self {
+            inner: WindowedRateLimiter::new(10, 10000),
+        }
+    }
+
+    fn allow(&self) -> bool {
+        self.inner.allow()
+    }
+}
+
+impl Default for ChatRateLimiter {
     fn default() -> Self {
         Self::new()
     }
@@ -363,70 +408,6 @@ struct MessageHandler {
     chat_rate_limiter: Arc<ChatRateLimiter>,
 }
 
-struct ChatRateLimiter {
-    messages: AtomicU64,
-    window_start: AtomicU64,
-}
-
-impl ChatRateLimiter {
-    const MAX_MESSAGES: u64 = 10;
-    const WINDOW_MS: u64 = 10000;
-
-    fn new() -> Self {
-        Self {
-            messages: AtomicU64::new(0),
-            window_start: AtomicU64::new(0),
-        }
-    }
-
-    fn allow(&self) -> bool {
-        let now_ms = Instant::now().elapsed().as_millis() as u64;
-        let mut spins = 0;
-
-        loop {
-            let window_start = self.window_start.load(Ordering::Acquire);
-            let elapsed = now_ms.saturating_sub(window_start);
-
-            if elapsed > Self::WINDOW_MS {
-                if self
-                    .window_start
-                    .compare_exchange(window_start, now_ms, Ordering::AcqRel, Ordering::Acquire)
-                    .is_ok()
-                {
-                    self.messages.store(0, Ordering::Release);
-                }
-                continue;
-            }
-
-            let current = self.messages.load(Ordering::Acquire);
-            if current >= Self::MAX_MESSAGES {
-                spins += 1;
-                if spins % 10 == 0 {
-                    std::thread::sleep(std::time::Duration::from_millis(1));
-                }
-                if spins > 100 {
-                    return false;
-                }
-                continue;
-            }
-
-            if self
-                .messages
-                .compare_exchange(current, current + 1, Ordering::AcqRel, Ordering::Acquire)
-                .is_ok()
-            {
-                return true;
-            }
-        }
-    }
-}
-
-impl Default for ChatRateLimiter {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl MessageHandler {
     fn new(
         server: Arc<Mutex<PokerServer>>,
@@ -458,7 +439,8 @@ impl MessageHandler {
         if let Some(action_str) = value["action"].as_str() {
             if let Some(action) = poker_protocol::PlayerAction::from_str(action_str) {
                 self.send_action(action);
-            } else if let Some(action) = poker_protocol::PlayerAction::from_value(&value["action"])
+            } else if let Some(action) =
+                poker_protocol::PlayerAction::from_value(&value["action"], None)
             {
                 self.send_action(action);
             } else {
@@ -722,7 +704,7 @@ mod tests {
     #[test]
     fn test_rate_limiter_allow() {
         let limiter = RateLimiter::new();
-        for _ in 0..RateLimiter::MAX_MESSAGES {
+        for _ in 0..100 {
             assert!(limiter.allow());
         }
         assert!(!limiter.allow());
@@ -732,14 +714,12 @@ mod tests {
     #[ignore]
     fn test_rate_limiter_window_reset() {
         let limiter = RateLimiter::new();
-        for _ in 0..RateLimiter::MAX_MESSAGES {
+        for _ in 0..100 {
             assert!(limiter.allow());
         }
         assert!(!limiter.allow());
 
-        std::thread::sleep(std::time::Duration::from_millis(
-            RateLimiter::WINDOW_MS + 100,
-        ));
+        std::thread::sleep(std::time::Duration::from_millis(1100));
 
         assert!(limiter.allow());
     }
@@ -747,7 +727,7 @@ mod tests {
     #[test]
     fn test_chat_rate_limiter_allow() {
         let limiter = ChatRateLimiter::new();
-        for _ in 0..ChatRateLimiter::MAX_MESSAGES {
+        for _ in 0..10 {
             assert!(limiter.allow());
         }
         assert!(!limiter.allow());

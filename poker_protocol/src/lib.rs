@@ -21,7 +21,7 @@ pub enum PlayerAction {
 }
 
 impl PlayerAction {
-    pub fn from_value(value: &serde_json::Value) -> Option<Self> {
+    pub fn from_value(value: &serde_json::Value, max_chips: Option<i32>) -> Option<Self> {
         if let Some(action_str) = value.as_str() {
             match action_str {
                 "Fold" => Some(PlayerAction::Fold),
@@ -32,13 +32,25 @@ impl PlayerAction {
             }
         } else if let Some(bet_amount) = value.get("Bet").and_then(|v| v.as_i64()) {
             if bet_amount > 0 {
-                Some(PlayerAction::Bet(bet_amount as i32))
+                let amount = bet_amount as i32;
+                if let Some(max) = max_chips {
+                    if amount > max {
+                        return None;
+                    }
+                }
+                Some(PlayerAction::Bet(amount))
             } else {
                 None
             }
         } else if let Some(raise_amount) = value.get("Raise").and_then(|v| v.as_i64()) {
             if raise_amount > 0 {
-                Some(PlayerAction::Raise(raise_amount as i32))
+                let amount = raise_amount as i32;
+                if let Some(max) = max_chips {
+                    if amount > max {
+                        return None;
+                    }
+                }
+                Some(PlayerAction::Raise(amount))
             } else {
                 None
             }
@@ -47,8 +59,12 @@ impl PlayerAction {
         }
     }
 
+    pub fn from_value_with_max(value: &serde_json::Value, max_chips: i32) -> Option<Self> {
+        Self::from_value(value, Some(max_chips))
+    }
+
     pub fn from_str(s: &str) -> Option<Self> {
-        Self::from_value(&serde_json::json!(s))
+        Self::from_value(&serde_json::json!(s), None)
     }
 }
 

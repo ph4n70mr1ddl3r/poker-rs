@@ -1,3 +1,4 @@
+use log::error;
 use poker_protocol::{
     ActionRequiredUpdate, Card, GameStage, GameStateUpdate, HandEvaluation, HandRank, PlayerAction,
     PlayerConnectedUpdate, PlayerState, PlayerUpdate, Rank, ServerError, ServerMessage,
@@ -82,7 +83,9 @@ impl PokerGame {
             player_name: name,
             chips,
         });
-        let _ = self.tx.send(update);
+        if let Err(e) = self.tx.send(update) {
+            error!("Failed to broadcast player connected: {}", e);
+        }
 
         if self.players.len() == 2 {
             self.start_hand();
@@ -246,7 +249,6 @@ impl PokerGame {
             dealer_position: self.dealer_position,
         };
         let _ = self.tx.send(ServerMessage::GameStateUpdate(update));
-
         let players: Vec<PlayerUpdate> = self
             .players
             .values()
@@ -266,7 +268,9 @@ impl PokerGame {
                 },
             })
             .collect();
-        let _ = self.tx.send(ServerMessage::PlayerUpdates(players));
+        if let Err(e) = self.tx.send(ServerMessage::PlayerUpdates(players)) {
+            error!("Failed to broadcast player updates: {}", e);
+        }
     }
 
     fn request_action(&mut self) {
@@ -291,7 +295,9 @@ impl PokerGame {
         };
 
         let msg = ServerMessage::ActionRequired(action_update);
-        let _ = self.tx.send(msg);
+        if let Err(e) = self.tx.send(msg) {
+            error!("Failed to broadcast action required: {}", e);
+        }
     }
 
     fn get_current_bet(&self) -> i32 {
@@ -669,7 +675,9 @@ impl PokerGame {
         }
 
         let msg = ServerMessage::Showdown(showdown_update);
-        let _ = self.tx.send(msg);
+        if let Err(e) = self.tx.send(msg) {
+            error!("Failed to broadcast showdown: {}", e);
+        }
 
         self.end_hand();
     }
@@ -761,14 +769,35 @@ impl PokerGame {
             .collect();
         rank_counts.sort_by_key(|&(_, count)| std::cmp::Reverse(count));
 
-        let three_kind = rank_counts.iter().find(|&&(_, count)| count >= 3);
-        let pair = rank_counts
+        let three_kind_cards: Vec<(u8, usize)> = rank_counts
             .iter()
-            .find(|&&(rank, count)| count >= 2 && Some(rank) != three_kind.map(|&(r, _)| r));
+            .filter(|&&(_, count)| count >= 3)
+            .cloned()
+            .collect();
+        let pair_cards: Vec<(u8, usize)> = rank_counts
+            .iter()
+            .filter(|&&(_, count)| count >= 2)
+            .cloned()
+            .collect();
 
-        if let (Some(&(three_rank, _)), Some(&(pair_rank, _))) = (three_kind, pair) {
+        if three_kind_cards.len() >= 2 {
+            let three_rank = three_kind_cards[0].0;
+            let pair_rank = three_kind_cards[1].0;
             return Some(HandEvaluation::full_house(three_rank, pair_rank));
         }
+
+        let three_kind_first = three_kind_cards.first();
+        let three_kind_rank = three_kind_first.map(|(r, _)| *r);
+        let pair_for_full_house = pair_cards
+            .iter()
+            .find(|&&(rank, _)| Some(rank) != three_kind_rank);
+
+        if let (Some((three_rank, _)), Some(&(pair_rank, _))) =
+            (three_kind_first, pair_for_full_house)
+        {
+            return Some(HandEvaluation::full_house(*three_rank, pair_rank));
+        }
+
         None
     }
 
@@ -891,7 +920,26 @@ impl PokerGame {
         self.game_stage = GameStage::HandComplete;
         self.broadcast_game_state();
 
-        self.dealer_position = (self.dealer_position + 1) % std::cmp::max(self.players.len(), 1);
+        let active_player_ids: Vec<String> = self
+            .players
+            .values()
+            .filter(|p| p.chips > 0 && !p.is_sitting_out)
+            .map(|p| p.id.clone())
+            .collect();
+
+        if !active_player_ids.is_empty() {
+            let current_dealer = active_player_ids
+                .get(self.dealer_position % active_player_ids.len())
+                .or(active_player_ids.first())
+                .cloned();
+
+            if let Some(current) = current_dealer {
+                if let Some(current_idx) = active_player_ids.iter().position(|id| id == &current) {
+                    let next_idx = (current_idx + 1) % active_player_ids.len();
+                    self.dealer_position = next_idx;
+                }
+            }
+        }
 
         let active_players: Vec<&PlayerState> = self
             .players

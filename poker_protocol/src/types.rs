@@ -187,7 +187,7 @@ pub enum GameStage {
     HandComplete,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PlayerState {
     pub id: String,
     pub name: String,

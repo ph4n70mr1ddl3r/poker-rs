@@ -263,23 +263,36 @@ fn setup_network(mut commands: Commands, server_config: Res<ServerConfig>) {
     let _network_task_clone = network_task.clone();
     let tx_for_reconnect = tx.clone();
     let ui_tx_for_task = ui_tx.clone();
+    let tx_for_network_clone = tx.clone();
 
     let task = rt.spawn(async move {
+        let tx = tx_for_network_clone;
+        let ui_tx = ui_tx_for_task;
+
         {
-            let mut state = connection_state_clone.lock().unwrap();
+            let mut state = match connection_state_clone.lock() {
+                Ok(guard) => guard,
+                Err(_) => {
+                    let _ = tx.send(ClientNetworkMessage::Error(
+                        "Mutex poisoned during connection".to_string(),
+                    ));
+                    return;
+                }
+            };
             *state = ConnectionState::Connecting;
         }
         let (ws_stream, connected_addr) =
-            match connect_with_retry(&server_addr_clone, &tx_for_network, &reconnect_state_clone)
-                .await
-            {
+            match connect_with_retry(&server_addr_clone, &tx, &reconnect_state_clone).await {
                 Ok(result) => result,
                 Err(e) => {
                     error!("Failed to connect: {}", e);
-                    let _ = tx_for_network.send(ClientNetworkMessage::Disconnected);
+                    let _ = tx.send(ClientNetworkMessage::Disconnected);
                     let _ = tx_for_reconnect.send(ClientNetworkMessage::Error(e));
                     {
-                        let mut state = connection_state_clone.lock().unwrap();
+                        let mut state = match connection_state_clone.lock() {
+                            Ok(guard) => guard,
+                            Err(_) => return,
+                        };
                         *state = ConnectionState::Disconnected;
                     }
                     return;
@@ -288,7 +301,15 @@ fn setup_network(mut commands: Commands, server_config: Res<ServerConfig>) {
 
         info!("Connected to server at {}", connected_addr);
         {
-            let mut state = connection_state_clone.lock().unwrap();
+            let mut state = match connection_state_clone.lock() {
+                Ok(guard) => guard,
+                Err(_) => {
+                    let _ = tx.send(ClientNetworkMessage::Error(
+                        "Mutex poisoned after connection".to_string(),
+                    ));
+                    return;
+                }
+            };
             *state = ConnectionState::Connected;
         }
 
@@ -308,8 +329,8 @@ fn setup_network(mut commands: Commands, server_config: Res<ServerConfig>) {
             }
         });
 
-        let tx_for_network_clone = tx_for_network.clone();
-        let ui_tx_for_pong = ui_tx_for_task.clone();
+        let tx_clone = tx.clone();
+        let ui_tx_for_pong = ui_tx.clone();
         let read_task = tokio::spawn(async move {
             let mut read = read;
             while let Some(result) = read.next().await {
@@ -326,19 +347,18 @@ fn setup_network(mut commands: Commands, server_config: Res<ServerConfig>) {
                                 let _ = ui_tx_for_pong.send(pong_msg.to_string());
                             }
                             let client_msg = convert_message(server_msg);
-                            let send_result = tx_for_network_clone.send(client_msg);
+                            let send_result = tx_clone.send(client_msg);
                             debug!("Sent to main thread: {:?}", send_result);
                         }
                     }
                     Ok(Message::Close(_)) => {
-                        let _ = tx_for_network_clone.send(ClientNetworkMessage::Disconnected);
+                        let _ = tx_clone.send(ClientNetworkMessage::Disconnected);
                         break;
                     }
                     Err(e) => {
                         error!("WebSocket error: {}", e);
-                        let _ =
-                            tx_for_network_clone.send(ClientNetworkMessage::Error(e.to_string()));
-                        let _ = tx_for_network_clone.send(ClientNetworkMessage::Disconnected);
+                        let _ = tx_clone.send(ClientNetworkMessage::Error(e.to_string()));
+                        let _ = tx_clone.send(ClientNetworkMessage::Disconnected);
                         break;
                     }
                     _ => {}
@@ -355,7 +375,7 @@ fn setup_network(mut commands: Commands, server_config: Res<ServerConfig>) {
         });
 
         let mut ping_interval = tokio::time::interval(Duration::from_secs(PING_INTERVAL_SECS));
-        let ping_tx_for_ping = tx_for_network.clone();
+        let ping_tx = tx.clone();
         let ping_task = tokio::spawn(async move {
             loop {
                 ping_interval.tick().await;
@@ -365,9 +385,8 @@ fn setup_network(mut commands: Commands, server_config: Res<ServerConfig>) {
                 });
                 if let Err(e) = write_tx.send(ping_msg.to_string()).await {
                     error!("Failed to queue ping: {}", e);
-                    let _ = ping_tx_for_ping
-                        .send(ClientNetworkMessage::Error("Ping failed".to_string()));
-                    let _ = ping_tx_for_ping.send(ClientNetworkMessage::Disconnected);
+                    let _ = ping_tx.send(ClientNetworkMessage::Error("Ping failed".to_string()));
+                    let _ = ping_tx.send(ClientNetworkMessage::Disconnected);
                     break;
                 }
             }
@@ -375,15 +394,24 @@ fn setup_network(mut commands: Commands, server_config: Res<ServerConfig>) {
 
         let _ = tokio::join!(read_task, write_task, forward_task, ping_task);
 
-        let _ = tx_for_network.send(ClientNetworkMessage::Disconnected);
+        let _ = tx.send(ClientNetworkMessage::Disconnected);
         {
-            let mut state = connection_state_clone.lock().unwrap();
+            let mut state = match connection_state_clone.lock() {
+                Ok(guard) => guard,
+                Err(_) => return,
+            };
             *state = ConnectionState::Disconnected;
         }
     });
 
     {
-        let mut task_guard = network_task.lock().unwrap();
+        let mut task_guard = match network_task.lock() {
+            Ok(guard) => guard,
+            Err(_) => {
+                error!("Failed to acquire network_task lock");
+                return;
+            }
+        };
         *task_guard = Some(task);
     }
 
@@ -516,38 +544,54 @@ fn trigger_reconnection(network_res: &Res<NetworkResources>, _commands: &mut Com
     let network_task = network_res.network_task.clone();
 
     let attempt = {
-        let state = reconnect_state.lock().unwrap();
+        let state = match reconnect_state.lock() {
+            Ok(guard) => guard,
+            Err(_) => return,
+        };
         state.attempt + 1
     };
 
     {
-        let mut state = connection_state.lock().unwrap();
+        let mut state = match connection_state.lock() {
+            Ok(guard) => guard,
+            Err(_) => return,
+        };
         *state = ConnectionState::Reconnecting(attempt);
     }
 
     let rt = Runtime::new().expect("Failed to create runtime for reconnection");
 
     let (tx, _) = mpsc::channel::<ClientNetworkMessage>();
-    let tx_for_network = tx.clone();
+    let tx_clone = tx.clone();
     let ui_tx = network_res.ui_tx.clone();
 
     let task = rt.spawn(async move {
         let (ws_stream, connected_addr) =
-            match connect_with_retry(&server_addr, &tx_for_network, &reconnect_state).await {
+            match connect_with_retry(&server_addr, &tx_clone, &reconnect_state).await {
                 Ok(result) => result,
                 Err(e) => {
                     error!("Reconnection failed: {}", e);
                     {
-                        let mut state = connection_state.lock().unwrap();
+                        let mut state = match connection_state.lock() {
+                            Ok(guard) => guard,
+                            Err(_) => return,
+                        };
                         *state = ConnectionState::Disconnected;
                     }
+                    let _ = tx_clone.send(ClientNetworkMessage::Error(format!(
+                        "Reconnection failed: {}",
+                        e
+                    )));
                     return;
                 }
             };
 
         info!("Reconnected to server at {}", connected_addr);
         {
-            let mut state = connection_state.lock().unwrap();
+            let mut state = match connection_state.lock() {
+                Ok(guard) => guard,
+                Err(_) => return,
+            };
             *state = ConnectionState::Connected;
         }
 
@@ -603,13 +647,19 @@ fn trigger_reconnection(network_res: &Res<NetworkResources>, _commands: &mut Com
 
         let _ = tx.send(ClientNetworkMessage::Disconnected);
         {
-            let mut state = connection_state.lock().unwrap();
+            let mut state = match connection_state.lock() {
+                Ok(guard) => guard,
+                Err(_) => return,
+            };
             *state = ConnectionState::Disconnected;
         }
     });
 
     {
-        let mut task_guard = network_task.lock().unwrap();
+        let mut task_guard = match network_task.lock() {
+            Ok(guard) => guard,
+            Err(_) => return,
+        };
         *task_guard = Some(task);
     }
 }

@@ -322,22 +322,23 @@ impl PokerServer {
         if let Some(game) = game {
             let pg = lock_game(game);
 
-            let players: Vec<(String, tokio::sync::mpsc::Sender<String>)> = pg
-                .get_players()
-                .keys()
-                .filter(|player_id| {
-                    self.players
-                        .get(player_id.as_str())
-                        .map(|p| p.connected)
-                        .unwrap_or(false)
-                })
-                .filter_map(|player_id| {
-                    self.players
-                        .get(player_id.as_str())
-                        .and_then(|p| p.ws_sender.as_ref())
-                        .map(|sender| (player_id.clone(), sender.clone()))
-                })
-                .collect();
+            let players: Vec<(String, tokio::sync::mpsc::Sender<String>)> = {
+                pg.get_players()
+                    .keys()
+                    .filter(|player_id| {
+                        self.players
+                            .get(player_id.as_str())
+                            .map(|p| p.connected)
+                            .unwrap_or(false)
+                    })
+                    .filter_map(|player_id| {
+                        self.players
+                            .get(player_id.as_str())
+                            .and_then(|p| p.ws_sender.as_ref())
+                            .map(|sender| (player_id.clone(), sender.clone()))
+                    })
+                    .collect()
+            };
 
             drop(pg);
 
@@ -346,10 +347,12 @@ impl PokerServer {
             }
 
             let timeout_duration = Duration::from_millis(BROADCAST_SEND_TIMEOUT_MS);
+            let msg_for_send = json;
 
             for (player_id, sender) in players {
-                let msg = json.clone();
+                let msg = msg_for_send.clone();
                 let sender = sender.clone();
+                let player_id = player_id.clone();
                 tokio::spawn(async move {
                     if let Err(e) = tokio::time::timeout(timeout_duration, sender.send(msg)).await {
                         error!("Timeout sending to player {}: {}", player_id, e);
