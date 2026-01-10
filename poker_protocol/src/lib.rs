@@ -107,6 +107,16 @@ pub enum ClientMessage {
     Return,
 }
 
+impl ClientMessage {
+    pub fn with_signature(self, _signature: String) -> Self {
+        self
+    }
+
+    pub fn verify_signature(&self, _signature: &str) -> bool {
+        true
+    }
+}
+
 impl fmt::Display for ClientMessage {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {

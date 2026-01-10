@@ -12,10 +12,6 @@ use tokio::sync::Semaphore;
 use tokio::time::{timeout, Duration};
 use uuid::Uuid;
 
-fn lock_game(game: &Arc<Mutex<PokerGame>>) -> parking_lot::MutexGuard<'_, PokerGame> {
-    game.lock()
-}
-
 pub const MAX_CONNECTIONS: usize = 100;
 pub const MAX_CONNECTIONS_PER_IP: usize = 5;
 const BROADCAST_SEND_TIMEOUT_MS: u64 = 5000;
@@ -195,7 +191,7 @@ impl PokerServer {
         self.player_sessions
             .insert(player_id.to_string(), game_id.to_string());
 
-        let mut poker_game = lock_game(game);
+        let mut poker_game = game.lock();
 
         poker_game.add_player(player_id.to_string(), player.name.clone(), player.chips);
 
@@ -216,7 +212,7 @@ impl PokerServer {
             .games
             .get(game_id)
             .ok_or(ServerError::GameNotFound(game_id.to_string()))?;
-        let poker_game = lock_game(game);
+        let poker_game = game.lock();
 
         let players: Vec<PlayerUpdate> = poker_game
             .players
@@ -278,7 +274,7 @@ impl PokerServer {
                     .clone();
 
                 if let Some(game) = self.games.get(&session) {
-                    let mut poker_game = lock_game(game);
+                    let mut poker_game = game.lock();
                     poker_game.handle_action(player_id, action)?;
                 } else {
                     return Err(ServerError::GameNotFound(session));
@@ -307,7 +303,7 @@ impl PokerServer {
                     .clone();
 
                 if let Some(game) = self.games.get(&session) {
-                    let mut poker_game = lock_game(game);
+                    let mut poker_game = game.lock();
                     poker_game.sit_out(player_id);
                 }
             }
@@ -319,7 +315,7 @@ impl PokerServer {
                     .clone();
 
                 if let Some(game) = self.games.get(&session) {
-                    let mut poker_game = lock_game(game);
+                    let mut poker_game = game.lock();
                     poker_game.return_to_game(player_id);
                 }
             }
@@ -344,7 +340,7 @@ impl PokerServer {
 
         let game = self.games.get(game_id);
         if let Some(game) = game {
-            let pg = lock_game(game);
+            let pg = game.lock();
 
             let players: Vec<(String, tokio::sync::mpsc::Sender<String>)> = {
                 pg.get_players()
@@ -394,20 +390,28 @@ impl PokerServer {
     /// # Arguments
     /// * `player_id` - The target player
     /// * `message` - The message to send
-    pub fn send_to_player(&self, player_id: &str, message: String) {
-        if let Some(player) = self.players.get(player_id) {
-            if let Some(ref sender) = player.ws_sender {
-                let sender = sender.clone();
-                let player_id = player_id.to_string();
-                let sem = Arc::clone(&self.send_semaphore);
-                tokio::spawn(async move {
-                    let _permit = sem.acquire().await;
-                    if let Err(e) = sender.send(message).await {
-                        error!("Failed to send message to player {}: {}", player_id, e);
-                    }
-                });
+    pub fn send_to_player(&self, player_id: &str, message: String) -> bool {
+        let player = match self.players.get(player_id) {
+            Some(p) => p,
+            None => return false,
+        };
+
+        let sender = match player.ws_sender.as_ref() {
+            Some(s) => s.clone(),
+            None => return false,
+        };
+
+        let player_id = player_id.to_string();
+        let sem = Arc::clone(&self.send_semaphore);
+
+        tokio::spawn(async move {
+            let _permit = sem.acquire().await;
+            if let Err(e) = sender.send(message).await {
+                error!("Failed to send message to player {}: {}", player_id, e);
             }
-        }
+        });
+
+        true
     }
 
     #[allow(dead_code)]

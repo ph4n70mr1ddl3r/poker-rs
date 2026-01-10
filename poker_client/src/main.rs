@@ -692,6 +692,9 @@ fn trigger_reconnection(network_res: &Res<NetworkResources>, _commands: &mut Com
             Ok(guard) => guard,
             Err(_) => return,
         };
+        if let Some(old_task) = task_guard.take() {
+            old_task.abort();
+        }
         *task_guard = Some(task);
     }
 }
@@ -948,13 +951,6 @@ fn update_ui(
                     ui.add_space(10.0);
 
                     ui.label("Raise: $");
-                    let raise_amount_str = match try_lock_mutex(&app_state.raise_amount) {
-                        Ok(guard) => guard.clone(),
-                        Err(e) => {
-                            error!("Failed to lock raise_amount: {}", e);
-                            String::new()
-                        }
-                    };
                     let mut raise_amount_guard = match try_lock_mutex(&app_state.raise_amount) {
                         Ok(guard) => guard,
                         Err(e) => {
@@ -966,24 +962,28 @@ fn update_ui(
                         egui::TextEdit::singleline(&mut *raise_amount_guard).desired_width(80.0);
                     ui.add(raise_input);
 
+                    let raise_amount_str = raise_amount_guard.clone();
                     let raise_amount_result: Result<i32, _> = raise_amount_str.parse();
-                    let raise_amount = raise_amount_result.as_ref().unwrap_or(&0);
-                    let is_valid_raise = raise_amount_result.is_ok() && *raise_amount > 0;
+                    let raise_amount_clamped = raise_amount_result
+                        .ok()
+                        .map(|v| v.clamp(1, action_player_chips))
+                        .unwrap_or(0);
+                    let is_valid_raise = raise_amount_clamped > 0;
 
                     let raise_btn = egui::Button::new("Raise")
                         .fill(egui::Color32::from_rgb(0, 100, 200))
                         .min_size(egui::Vec2::new(100.0, 40.0));
                     let can_raise = is_valid_raise
-                        && *raise_amount >= action_min_raise
-                        && *raise_amount <= action_player_chips;
+                        && raise_amount_clamped >= action_min_raise
+                        && raise_amount_clamped <= action_player_chips;
                     if ui.add_enabled(can_raise, raise_btn).clicked() {
                         if let Ok(msg) = serde_json::to_string(&serde_json::json!({
                             "type": "action",
                             "action": "Raise",
-                             "amount": raise_amount
+                             "amount": raise_amount_clamped
                         })) {
                             let _ = network_res.ui_tx.send(msg);
-                            info!("Sent Raise action: ${}", raise_amount);
+                            info!("Sent Raise action: ${}", raise_amount_clamped);
                             if let Ok(mut guard) = try_lock_mutex(&app_state.raise_amount) {
                                 guard.clear();
                             }

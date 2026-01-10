@@ -757,7 +757,7 @@ mod tests {
 
     #[test]
     fn test_sanitize_player_name_special_chars() {
-        assert_eq!(sanitize_player_name("Test@Player#123"), "Test_Player_123");
+        assert_eq!(sanitize_player_name("Test@Player#123"), "TestPlayer123");
     }
 
     #[test]

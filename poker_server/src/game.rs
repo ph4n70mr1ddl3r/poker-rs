@@ -57,7 +57,7 @@ impl PokerGame {
             current_street: Street::Preflop,
             dealer_position: 0,
             current_player_id: None,
-            min_raise: big_blind * 2,
+            min_raise: big_blind.saturating_mul(2),
             tx,
             game_stage: GameStage::WaitingForPlayers,
             hand_number: 0,
@@ -236,11 +236,10 @@ impl PokerGame {
         self.game_stage = GameStage::BettingRound(Street::Preflop);
 
         let active_player_ids = self.get_active_player_ids();
-        if active_player_ids.len() >= 2 {
-            self.current_player_id = Some(active_player_ids[1].clone());
-        } else {
-            self.current_player_id = active_player_ids.first().cloned();
-        }
+        self.current_player_id = active_player_ids
+            .get(1)
+            .cloned()
+            .or_else(|| active_player_ids.first().cloned());
 
         self.broadcast_game_state();
         self.request_action();
@@ -329,7 +328,9 @@ impl PokerGame {
             }
         }
 
-        self.players.get(&active_player_ids[0])
+        active_player_ids
+            .first()
+            .and_then(|id| self.players.get(id))
     }
 
     /// Processes a player's action in the game.
