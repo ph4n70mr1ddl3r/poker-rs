@@ -4,3 +4,4 @@ members = [
     "poker_client",
     "poker_server",
 ]
+resolver = "2"

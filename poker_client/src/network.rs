@@ -16,7 +16,7 @@ pub enum NetworkMessage {
     Chat(ChatMessage),
     Error(String),
     Ping(u64),
-    Pong(u64),
+    Pong(()),
 }
 
 pub fn parse_message(text: &str) -> Result<NetworkMessage, String> {
@@ -164,11 +164,11 @@ fn parse_by_type(
             Ok(NetworkMessage::Ping(timestamp))
         }
         "Pong" | "pong" => {
-            let timestamp = value["timestamp"]
+            let _timestamp = value["timestamp"]
                 .as_u64()
                 .or(value["id"].as_u64())
                 .unwrap_or(0);
-            Ok(NetworkMessage::Pong(timestamp))
+            Ok(NetworkMessage::Pong(()))
         }
         "Connected" | "connected" => {
             let player_id = value["player_id"]
@@ -345,9 +345,7 @@ mod tests {
         assert!(result.is_ok());
         let msg = result.unwrap();
         match msg {
-            NetworkMessage::Pong(timestamp) => {
-                assert_eq!(timestamp, 1234567890);
-            }
+            NetworkMessage::Pong(()) => {}
             _ => panic!("Expected Pong"),
         }
     }

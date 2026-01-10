@@ -151,7 +151,6 @@ const INACTIVITY_TIMEOUT_MS: u64 = 600000;
 const MAX_CONNECTIONS: usize = 100;
 const MAX_CONNECTIONS_PER_IP: usize = 5;
 const SESSION_TOKEN_EXPIRY_HOURS: u64 = 24;
-const MAX_BET_MULTIPLIER: i32 = 10;
 const MAX_BET_PER_HAND: i32 = 100000;
 
 #[derive(Clone)]

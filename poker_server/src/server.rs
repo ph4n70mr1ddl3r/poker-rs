@@ -45,6 +45,7 @@ impl ServerPlayer {
         }
     }
 
+    #[allow(dead_code)]
     pub fn is_session_expired(&self, expiry_hours: u64) -> bool {
         let expiry_duration = chrono::Duration::hours(expiry_hours as i64);
         Utc::now() - self.session_created_at > expiry_duration
@@ -76,6 +77,7 @@ impl PokerServer {
     }
 
     /// Sets the session token expiry duration in hours.
+    #[allow(dead_code)]
     pub fn set_session_expiry_hours(&mut self, hours: u64) {
         self.session_expiry_hours = hours;
     }
@@ -369,7 +371,7 @@ impl PokerServer {
                 let sender = sender.clone();
                 let player_id = player_id.clone();
                 tokio::spawn(async move {
-                    if let Err(e) = tokio::time::timeout(timeout_duration, sender.send(msg)).await {
+                    if let Err(e) = timeout(timeout_duration, sender.send(msg)).await {
                         error!("Timeout sending to player {}: {}", player_id, e);
                     }
                 });
@@ -396,6 +398,7 @@ impl PokerServer {
         }
     }
 
+    #[allow(dead_code)]
     pub fn verify_session(&self, player_id: &str, token: &str) -> bool {
         self.players
             .get(player_id)
@@ -445,7 +448,7 @@ mod tests {
     fn test_per_ip_connection_limits() {
         let mut server = PokerServer::new();
 
-        for i in 0..MAX_CONNECTIONS_PER_IP {
+        for _i in 0..MAX_CONNECTIONS_PER_IP {
             assert!(server.can_accept_connection("127.0.0.1"));
             server.register_connection("127.0.0.1");
         }

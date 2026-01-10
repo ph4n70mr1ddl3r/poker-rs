@@ -70,24 +70,6 @@ impl PokerGameState {
         }
     }
 
-    pub fn clone(&self) -> Self {
-        Self {
-            players: self.players.clone(),
-            community_cards: self.community_cards.clone(),
-            pot: self.pot,
-            side_pots: self.side_pots.clone(),
-            current_street: self.current_street.clone(),
-            hand_number: self.hand_number,
-            dealer_position: self.dealer_position,
-            action_required: self.action_required.clone(),
-            showdown: self.showdown.clone(),
-            chat_messages: self.chat_messages.clone(),
-            errors: self.errors.clone(),
-            my_id: self.my_id.clone(),
-            pending_chat: Mutex::new(self.pending_chat.lock().unwrap().clone()),
-        }
-    }
-
     pub fn apply_update(&mut self, update: GameStateUpdate) {
         self.hand_number = update.hand_number;
         self.pot = update.pot;
@@ -163,20 +145,5 @@ impl PokerGameState {
             .filter(|c| !c.is_empty())
             .cloned()
             .collect();
-    }
-
-    pub fn is_my_turn(&self) -> bool {
-        if let Some(ref action) = self.action_required {
-            return action.player_id == self.my_id;
-        }
-        false
-    }
-
-    pub fn get_my_player(&self) -> Option<&Player> {
-        self.players.get(&self.my_id)
-    }
-
-    pub fn get_my_player_mut(&mut self) -> Option<&mut Player> {
-        self.players.get_mut(&self.my_id)
     }
 }

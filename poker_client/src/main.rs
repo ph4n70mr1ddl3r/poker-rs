@@ -23,6 +23,7 @@ mod network;
 use game::PokerGameState;
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 enum ClientNetworkMessage {
     Connected(String),
     PlayerIdConfirmed(String),
@@ -251,7 +252,7 @@ fn setup_network(mut commands: Commands, server_config: Res<ServerConfig>) {
 
     info!("Created mpsc channels");
 
-    let tx_for_network = tx.clone();
+    let _tx_for_network = tx.clone();
     let rx_arc = Arc::new(Mutex::new(rx));
     let server_addr = server_config.address.clone();
     let reconnect_state = Arc::new(Mutex::new(ReconnectState::new()));
@@ -603,7 +604,7 @@ fn trigger_reconnection(network_res: &Res<NetworkResources>, _commands: &mut Com
         });
         let _ = write.send(Message::Text(connect_msg.to_string())).await;
 
-        let (write_tx, mut write_rx) = tokio::sync::mpsc::channel::<String>(100);
+        let (_write_tx, mut write_rx) = tokio::sync::mpsc::channel::<String>(100);
         let write_task = tokio::spawn(async move {
             while let Some(msg) = write_rx.recv().await {
                 let _ = write.send(Message::Text(msg)).await;

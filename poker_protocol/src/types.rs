@@ -88,10 +88,6 @@ impl Card {
     pub fn new(suit: Suit, rank: Rank) -> Self {
         Self { suit, rank }
     }
-
-    pub fn to_string(&self) -> String {
-        format!("{}{}", self.rank, self.suit)
-    }
 }
 
 impl fmt::Display for Card {

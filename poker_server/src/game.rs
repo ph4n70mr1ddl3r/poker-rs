@@ -67,6 +67,7 @@ impl PokerGame {
     }
 
     /// Sets the maximum bet per hand.
+    #[allow(dead_code)]
     pub fn set_max_bet_per_hand(&mut self, max_bet: i32) {
         self.max_bet_per_hand = max_bet.max(0);
     }
@@ -715,12 +716,6 @@ impl PokerGame {
 
         if all_cards.len() < 5 {
             let top_rank = all_cards.iter().map(|c| c.rank as i32).max().unwrap_or(0);
-            let top_rank_display = all_cards
-                .iter()
-                .max_by_key(|c| c.rank as u8)
-                .and_then(|c| Rank::from_u8(c.rank as u8))
-                .map(|r| r.to_string())
-                .unwrap_or_else(|| "None".to_string());
 
             return HandEvaluation {
                 rank: HandRank::HighCard,
@@ -1471,7 +1466,7 @@ mod tests {
         let pots = game.calculate_side_pots();
         assert!(!pots.is_empty());
 
-        let side_pot = pots.iter().find(|(amount, players)| {
+        let side_pot = pots.iter().find(|(_amount, players)| {
             players.contains(&"p1".to_string()) && players.contains(&"p2".to_string())
         });
         assert!(side_pot.is_some());
