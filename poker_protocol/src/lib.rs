@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::fmt;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::sync::{Arc, Mutex};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 mod errors;
 mod types;
@@ -13,20 +14,79 @@ pub type ServerResult<T> = std::result::Result<T, ServerError>;
 
 const HMAC_SECRET_LEN: usize = 32;
 const MESSAGE_TIMESTAMP_MAX_DIFF_MS: u64 = 30000;
+const NONCE_CACHE_SIZE: usize = 1000;
+const NONCE_EXPIRY_MS: u64 = 60000;
+
+struct NonceEntry {
+    nonce: u64,
+    timestamp: Instant,
+}
+
+pub struct NonceCache {
+    entries: Arc<Mutex<Vec<NonceEntry>>>,
+}
+
+impl NonceCache {
+    pub fn new() -> Self {
+        Self {
+            entries: Arc::new(Mutex::new(Vec::new())),
+        }
+    }
+
+    pub fn is_duplicate(&self, nonce: u64) -> bool {
+        let now = Instant::now();
+        let mut entries = match self.entries.lock() {
+            Ok(guard) => guard,
+            Err(_) => return false,
+        };
+
+        entries.retain(|entry| {
+            now.duration_since(entry.timestamp).as_millis() < NONCE_EXPIRY_MS as u128
+        });
+
+        if entries.iter().any(|entry| entry.nonce == nonce) {
+            return true;
+        }
+
+        if entries.len() >= NONCE_CACHE_SIZE {
+            entries.remove(0);
+        }
+
+        entries.push(NonceEntry {
+            nonce,
+            timestamp: now,
+        });
+
+        false
+    }
+}
+
+impl Default for NonceCache {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct HmacKey([u8; HMAC_SECRET_LEN]);
 
 impl HmacKey {
-    pub fn new() -> Self {
-        let key = ring::hmac::Key::generate(ring::hmac::HMAC_SHA256).unwrap();
-        let key_bytes = key.as_ref().to_vec();
-        let mut array = [0u8; HMAC_SECRET_LEN];
-        array.copy_from_slice(&key_bytes[..HMAC_SECRET_LEN]);
-        Self(array)
+    pub fn new() -> Result<Self, ProtocolError> {
+        ring::hmac::Key::generate(ring::hmac::HMAC_SHA256, &ring::rand::SystemRandom::new())
+            .map_err(|_| ProtocolError::HmacKeyGeneration)
+            .and_then(|key| {
+                let tag = ring::hmac::sign(&key, &[]);
+                let key_bytes = tag.as_ref();
+                if key_bytes.len() >= HMAC_SECRET_LEN {
+                    let mut array = [0u8; HMAC_SECRET_LEN];
+                    array.copy_from_slice(&key_bytes[..HMAC_SECRET_LEN]);
+                    Ok(Self(array))
+                } else {
+                    Err(ProtocolError::HmacKeyGeneration)
+                }
+            })
     }
 
-    #[allow(dead_code)]
     pub fn from_bytes(bytes: &[u8]) -> Option<Self> {
         if bytes.len() >= HMAC_SECRET_LEN {
             let mut array = [0u8; HMAC_SECRET_LEN];
@@ -43,6 +103,9 @@ impl HmacKey {
     }
 
     pub fn verify(&self, message: &str, signature: &[u8]) -> bool {
+        if signature.len() != 32 {
+            return false;
+        }
         let key = ring::hmac::Key::new(ring::hmac::HMAC_SHA256, &self.0);
         ring::hmac::verify(&key, message.as_bytes(), signature).is_ok()
     }
@@ -50,7 +113,23 @@ impl HmacKey {
 
 impl Default for HmacKey {
     fn default() -> Self {
-        Self::new()
+        let rng = ring::rand::SystemRandom::new();
+        let generate_key = || ring::hmac::Key::generate(ring::hmac::HMAC_SHA256, &rng);
+
+        let key = match generate_key() {
+            Ok(k) => k,
+            Err(_) => match generate_key() {
+                Ok(k) => k,
+                Err(_) => {
+                    panic!("Unable to generate HMAC key after two attempts");
+                }
+            },
+        };
+        let tag = ring::hmac::sign(&key, &[]);
+        let key_bytes = tag.as_ref();
+        let mut array = [0u8; HMAC_SECRET_LEN];
+        array.copy_from_slice(&key_bytes[..HMAC_SECRET_LEN]);
+        Self(array)
     }
 }
 
@@ -235,18 +314,24 @@ pub struct SignedMessage {
     pub message: String,
     pub signature: Vec<u8>,
     pub timestamp: u64,
+    pub nonce: u64,
 }
 
 impl SignedMessage {
-    pub fn new(message: String, signature: Vec<u8>, timestamp: u64) -> Self {
+    pub fn new(message: String, signature: Vec<u8>, timestamp: u64, nonce: u64) -> Self {
         Self {
             message,
             signature,
             timestamp,
+            nonce,
         }
     }
 
-    pub fn create(message: &ClientMessage, key: &HmacKey) -> Result<Self, ProtocolError> {
+    pub fn create(
+        message: &ClientMessage,
+        key: &HmacKey,
+        nonce: u64,
+    ) -> Result<Self, ProtocolError> {
         let timestamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_err(|_| ProtocolError::TimestampError)?
@@ -255,16 +340,21 @@ impl SignedMessage {
         let message_json =
             serde_json::to_string(message).map_err(|_| ProtocolError::JsonSerialize)?;
 
-        let signature = key.sign(&format!("{}{}", timestamp, message_json));
+        let signature = key.sign(&format!("{}{}{}", timestamp, nonce, message_json));
 
         Ok(Self {
             message: message_json,
             signature,
             timestamp,
+            nonce,
         })
     }
 
-    pub fn verify(&self, key: &HmacKey) -> Result<ClientMessage, ProtocolError> {
+    pub fn verify(
+        &self,
+        key: &HmacKey,
+        nonce_cache: &NonceCache,
+    ) -> Result<ClientMessage, ProtocolError> {
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_err(|_| ProtocolError::TimestampError)?
@@ -274,14 +364,19 @@ impl SignedMessage {
             return Err(ProtocolError::MessageExpired);
         }
 
+        if nonce_cache.is_duplicate(self.nonce) {
+            return Err(ProtocolError::MessageExpired);
+        }
+
         if !key.verify(
-            &format!("{}{}", self.timestamp, self.message),
+            &format!("{}{}{}", self.timestamp, self.nonce, self.message),
             &self.signature,
         ) {
             return Err(ProtocolError::InvalidSignature);
         }
 
-        serde_json::from_str(&self.message).map_err(|_| ProtocolError::JsonDeserialize)
+        serde_json::from_str(&self.message)
+            .map_err(|e| ProtocolError::JsonDeserialize(e.to_string()))
     }
 }
 
@@ -385,7 +480,7 @@ pub struct ChatMessage {
 
 impl ServerMessage {
     pub fn to_unified_json(&self) -> Result<String, ProtocolError> {
-        match self {
+        let value = match self {
             ServerMessage::Connected(player_id) => {
                 serde_json::json!({ "type": "Connected", "player_id": player_id })
             }
@@ -409,17 +504,17 @@ impl ServerMessage {
                         result.extend(obj.clone());
                         Ok(serde_json::Value::Object(result))
                     },
-                ),
+                )?,
             ServerMessage::PlayerUpdates(updates) => {
                 let updates_json: Vec<serde_json::Value> = updates
                     .iter()
                     .map(serde_json::to_value)
                     .collect::<Result<_, _>>()
                     .map_err(|_| ProtocolError::JsonSerialize)?;
-                Ok(serde_json::json!({
+                serde_json::json!({
                     "type": "PlayerUpdates",
                     "players": updates_json
-                }))
+                })
             }
             ServerMessage::ActionRequired(update) => serde_json::to_value(update)
                 .map_err(|_| ProtocolError::JsonSerialize)?
@@ -435,7 +530,7 @@ impl ServerMessage {
                         result.extend(obj.clone());
                         Ok(serde_json::Value::Object(result))
                     },
-                ),
+                )?,
             ServerMessage::PlayerConnected(update) => serde_json::to_value(update)
                 .map_err(|_| ProtocolError::JsonSerialize)?
                 .as_object()
@@ -450,7 +545,7 @@ impl ServerMessage {
                         result.extend(obj.clone());
                         Ok(serde_json::Value::Object(result))
                     },
-                ),
+                )?,
             ServerMessage::PlayerDisconnected(update) => {
                 serde_json::json!({
                     "type": "PlayerDisconnected",
@@ -471,7 +566,7 @@ impl ServerMessage {
                         result.extend(obj.clone());
                         Ok(serde_json::Value::Object(result))
                     },
-                ),
+                )?,
             ServerMessage::Chat(msg) => {
                 serde_json::json!({
                     "type": "Chat",
@@ -487,7 +582,7 @@ impl ServerMessage {
                     "message": err_msg
                 })
             }
-        }
-        .and_then(|v| serde_json::to_string(&v).map_err(|_| ProtocolError::JsonSerialize))
+        };
+        serde_json::to_string(&value).map_err(|_| ProtocolError::JsonSerialize)
     }
 }

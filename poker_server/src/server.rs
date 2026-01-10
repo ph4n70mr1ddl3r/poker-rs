@@ -1,6 +1,6 @@
 use crate::game::PokerGame;
 use chrono::{DateTime, Utc};
-use log::error;
+use log::{error, warn};
 use parking_lot::Mutex;
 use poker_protocol::{ChatMessage, ClientMessage, PlayerUpdate, ServerMessage};
 use poker_protocol::{ServerError, ServerResult};
@@ -176,6 +176,8 @@ impl PokerServer {
             };
             self.broadcast_to_game_by_player(player_id, &json);
         }
+
+        self.player_sessions.remove(player_id);
     }
 
     fn broadcast_to_game_by_player(&self, exclude_player_id: &str, message: &str) {
@@ -325,7 +327,19 @@ impl PokerServer {
                 self.seat_player(player_id, "main_table")?;
             }
             ClientMessage::Reconnect(existing_player_id) => {
+                if existing_player_id != player_id {
+                    warn!(
+                        "Player {} attempted to reconnect as {}",
+                        player_id, existing_player_id
+                    );
+                    return Err(ServerError::PlayerNotFound(existing_player_id));
+                }
+
                 if let Some(player) = self.players.get_mut(&existing_player_id) {
+                    if player.is_session_expired(self.session_expiry_hours) {
+                        warn!("Session expired for player {}", existing_player_id);
+                        return Err(ServerError::SessionExpired);
+                    }
                     player.connected = true;
                     if let Some(session) = self.player_sessions.get(&existing_player_id) {
                         self.send_game_state_to_player(&existing_player_id, session)?;
@@ -401,9 +415,14 @@ impl PokerServer {
         let json = match message.to_unified_json() {
             Ok(json) => json,
             Err(e) => {
-                error!("Failed to serialize message: {}", e);
-                let fallback = serde_json::to_string(&message).unwrap_or_default();
-                fallback
+                error!("Failed to serialize message to unified format: {}", e);
+                match serde_json::to_string(&message) {
+                    Ok(fallback) => fallback,
+                    Err(e2) => {
+                        error!("Failed to serialize message to fallback format: {}", e2);
+                        return;
+                    }
+                }
             }
         };
 

@@ -30,57 +30,55 @@ pub struct TokenBucketRateLimiter {
 
 impl TokenBucketRateLimiter {
     pub fn new(max_tokens: u64, refill_rate: u64) -> Self {
+        let now = tokio::time::Instant::now().elapsed().as_millis() as u64;
         Self {
             tokens: std::sync::atomic::AtomicU64::new(max_tokens),
-            last_update: std::sync::atomic::AtomicU64::new(0),
+            last_update: std::sync::atomic::AtomicU64::new(now),
             max_tokens,
             refill_rate,
         }
     }
 
     pub async fn allow(&self) -> bool {
-        let now = tokio::time::Instant::now().elapsed().as_millis() as u64;
-
         loop {
+            let now = tokio::time::Instant::now().elapsed().as_millis() as u64;
             let tokens = self.tokens.load(std::sync::atomic::Ordering::Relaxed);
             let last_update = self.last_update.load(std::sync::atomic::Ordering::Relaxed);
 
-            if tokens == 0 {
-                let elapsed = now.saturating_sub(last_update);
-                let refill = elapsed.saturating_div(1000).saturating_mul(self.refill_rate);
+            let elapsed = now.saturating_sub(last_update);
+            let refill = elapsed
+                .saturating_div(1000)
+                .saturating_mul(self.refill_rate);
 
-                if refill == 0 {
-                    return false;
-                }
+            let available_tokens = if refill > 0 {
+                std::cmp::min(self.max_tokens, tokens.saturating_add(refill))
+            } else {
+                tokens
+            };
 
-                let new_tokens = std::cmp::min(self.max_tokens, tokens.saturating_add(refill));
-
-                if self
-                    .tokens
-                    .compare_exchange(tokens, new_tokens, std::sync::atomic::Ordering::AcqRel, std::sync::atomic::Ordering::Acquire)
-                    .is_err()
-                {
-                    continue;
-                }
-
-                self.last_update.store(now, std::sync::atomic::Ordering::Relaxed);
-                return new_tokens > 0;
+            if available_tokens == 0 {
+                return false;
             }
+
+            let new_tokens = available_tokens.saturating_sub(1);
 
             if self
                 .tokens
-                .compare_exchange(tokens, tokens - 1, std::sync::atomic::Ordering::AcqRel, std::sync::atomic::Ordering::Acquire)
+                .compare_exchange(
+                    tokens,
+                    new_tokens,
+                    std::sync::atomic::Ordering::AcqRel,
+                    std::sync::atomic::Ordering::Acquire,
+                )
                 .is_ok()
             {
+                if refill > 0 {
+                    self.last_update
+                        .store(now, std::sync::atomic::Ordering::Relaxed);
+                }
                 return true;
             }
         }
-    }
-}
-
-impl Default for TokenBucketRateLimiter {
-    fn default() -> Self {
-        Self::new(100, 10)
     }
 }
 
@@ -119,12 +117,6 @@ impl ChatRateLimiter {
 
     async fn allow(&self) -> bool {
         self.inner.allow().await
-    }
-}
-
-impl Default for ChatRateLimiter {
-    fn default() -> Self {
-        Self::new()
     }
 }
 

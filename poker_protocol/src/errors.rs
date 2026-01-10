@@ -25,6 +25,9 @@ pub enum ProtocolError {
 
     #[error("Message expired")]
     MessageExpired,
+
+    #[error("Failed to generate HMAC key")]
+    HmacKeyGeneration,
 }
 
 impl From<serde_json::Error> for ProtocolError {
@@ -43,6 +46,9 @@ pub enum ServerError {
 
     #[error("Player not in a game")]
     PlayerNotInGame,
+
+    #[error("Session expired")]
+    SessionExpired,
 
     #[error("Not your turn")]
     NotYourTurn,

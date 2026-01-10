@@ -106,10 +106,6 @@ struct NetworkResources {
     network_task: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
 }
 
-fn try_lock_mutex<T>(mutex: &Mutex<T>) -> Result<std::sync::MutexGuard<'_, T>, String> {
-    mutex.lock().map_err(|_| "Mutex poisoned".to_string())
-}
-
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let client_name = if args.len() > 1 {
@@ -951,19 +947,21 @@ fn update_ui(
                     ui.add_space(10.0);
 
                     ui.label("Raise: $");
-                    let mut raise_amount_guard = match try_lock_mutex(&app_state.raise_amount) {
-                        Ok(guard) => guard,
-                        Err(e) => {
-                            error!("Failed to lock raise_amount: {}", e);
-                            return;
+                    let raise_amount_str = {
+                        match app_state.raise_amount.try_lock() {
+                            Ok(guard) => (*guard).clone(),
+                            Err(_) => {
+                                ui.label("System busy, try again");
+                                return;
+                            }
                         }
                     };
+                    let mut raise_amount_str = raise_amount_str;
                     let raise_input =
-                        egui::TextEdit::singleline(&mut *raise_amount_guard).desired_width(80.0);
+                        egui::TextEdit::singleline(&mut raise_amount_str).desired_width(80.0);
                     ui.add(raise_input);
 
-                    let raise_amount_str = raise_amount_guard.clone();
-                    let raise_amount_result: Result<i32, _> = raise_amount_str.parse();
+                    let raise_amount_result = raise_amount_str.parse::<i32>();
                     let raise_amount_clamped = raise_amount_result
                         .ok()
                         .map(|v| v.clamp(1, action_player_chips))
@@ -984,7 +982,7 @@ fn update_ui(
                         })) {
                             let _ = network_res.ui_tx.send(msg);
                             info!("Sent Raise action: ${}", raise_amount_clamped);
-                            if let Ok(mut guard) = try_lock_mutex(&app_state.raise_amount) {
+                            if let Ok(mut guard) = app_state.raise_amount.try_lock() {
                                 guard.clear();
                             }
                         }
@@ -1029,28 +1027,32 @@ fn update_ui(
                     );
                 }
                 ui.add_space(10.0);
-                let mut pending_chat_guard =
-                    match try_lock_mutex(&app_state.game_state.pending_chat) {
-                        Ok(guard) => guard,
-                        Err(e) => {
-                            error!("Failed to lock pending_chat: {}", e);
-                            return;
-                        }
-                    };
-                let chat_input = egui::TextEdit::singleline(&mut *pending_chat_guard)
+                let mut pending_chat_text = String::new();
+                let pending_chat_guard = match app_state.game_state.pending_chat.try_lock() {
+                    Ok(guard) => {
+                        pending_chat_text = guard.clone();
+                        guard
+                    }
+                    Err(_) => {
+                        ui.label("System busy, try again");
+                        return;
+                    }
+                };
+                let chat_input = egui::TextEdit::singleline(&mut pending_chat_text)
                     .desired_width(180.0)
                     .hint_text("Type a message...");
                 if ui.add(chat_input).lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter))
                 {
-                    let chat_text = pending_chat_guard.clone();
-                    if !chat_text.is_empty() {
+                    if !pending_chat_text.is_empty() {
                         if let Ok(msg) = serde_json::to_string(&serde_json::json!({
                             "type": "chat",
-                            "text": chat_text
+                            "text": pending_chat_text
                         })) {
                             let _ = network_res.ui_tx.send(msg);
                             info!("Sent chat message");
-                            pending_chat_guard.clear();
+                            if let Ok(mut guard) = app_state.game_state.pending_chat.try_lock() {
+                                guard.clear();
+                            }
                         }
                     }
                 }

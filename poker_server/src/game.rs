@@ -1,4 +1,4 @@
-use log::error;
+use log::{debug, error};
 use poker_protocol::{
     ActionRequiredUpdate, Card, GameStage, GameStateUpdate, HandEvaluation, HandRank, PlayerAction,
     PlayerConnectedUpdate, PlayerState, PlayerUpdate, Rank, ServerError, ServerMessage,
@@ -10,6 +10,8 @@ use std::collections::HashMap;
 use tokio::sync::broadcast;
 
 const MAX_BET_MULTIPLIER: i32 = 10;
+const MAX_POT: i32 = i32::MAX / 2;
+const MAX_CHIPS: i32 = i32::MAX / 2;
 
 const MAX_BROADCAST_RETRIES: u32 = 3;
 const BROADCAST_RETRY_DELAY_MS: u64 = 10;
@@ -51,7 +53,7 @@ impl PokerGame {
                     }
                     retries += 1;
                     std::thread::sleep(std::time::Duration::from_millis(
-                        BROADCAST_RETRY_DELAY_MS * retries,
+                        BROADCAST_RETRY_DELAY_MS * retries as u64,
                     ));
                 }
             }
@@ -89,6 +91,35 @@ impl PokerGame {
             hand_number: 0,
             max_bet_per_hand: crate::MAX_BET_PER_HAND,
         }
+    }
+
+    /// Safely calculates the new pot value with overflow protection
+    /// Returns None if the amount would exceed the maximum pot size
+    fn calculate_new_pot(&mut self, amount: i32) -> Option<i32> {
+        if amount <= 0 {
+            return None;
+        }
+        let new_pot = self.pot.checked_add(amount)?;
+        if new_pot > MAX_POT {
+            return None;
+        }
+        Some(new_pot)
+    }
+
+    /// Safely checks and sets player chips with overflow protection
+    fn add_player_chips(&mut self, player_id: &str, amount: i32) -> ServerResult<()> {
+        if amount <= 0 {
+            return Err(ServerError::InvalidAmount);
+        }
+        if let Some(player) = self.players.get_mut(player_id) {
+            player.chips = player.chips.checked_add(amount).ok_or_else(|| {
+                ServerError::InvalidBet("Player chips exceed maximum".to_string())
+            })?;
+            if player.chips > MAX_CHIPS {
+                player.chips = MAX_CHIPS;
+            }
+        }
+        Ok(())
     }
 
     /// Sets the maximum bet per hand.
@@ -176,6 +207,10 @@ impl PokerGame {
     fn post_blinds(&mut self) {
         let active_player_ids = self.get_active_player_ids();
         if active_player_ids.len() < 2 {
+            debug!(
+                "Cannot post blinds: only {} active players (need at least 2)",
+                active_player_ids.len()
+            );
             return;
         }
 
@@ -353,12 +388,26 @@ impl PokerGame {
     }
 
     /// Validates a bet amount before processing
-    fn validate_bet_amount(&self, player: &PlayerState, amount: i32) -> ServerResult<()> {
+    ///
+    /// # Arguments
+    /// * `player` - The player placing the bet
+    /// * `amount` - The bet amount to validate
+    /// * `current_bet` - The current highest bet in the round
+    /// * `pot` - The current pot size
+    ///
+    /// # Returns
+    /// `Ok(())` if the bet is valid, or an error otherwise
+    fn validate_bet_amount(
+        &self,
+        player: &PlayerState,
+        amount: i32,
+        current_bet: i32,
+        pot: i32,
+    ) -> ServerResult<()> {
         if amount <= 0 {
             return Err(ServerError::InvalidAmount);
         }
 
-        let current_bet = self.get_current_bet();
         if current_bet > 0 {
             return Err(ServerError::CannotBet);
         }
@@ -367,11 +416,11 @@ impl PokerGame {
             return Err(ServerError::BetExceedsChips(amount, player.chips));
         }
 
-        let max_bet = self.pot.saturating_mul(MAX_BET_MULTIPLIER);
+        let max_bet = pot.saturating_mul(MAX_BET_MULTIPLIER);
         if amount > max_bet && player.chips > max_bet {
             return Err(ServerError::InvalidBet(format!(
                 "Bet exceeds maximum allowed: {} (pot: {})",
-                max_bet, self.pot
+                max_bet, pot
             )));
         }
 
@@ -390,8 +439,20 @@ impl PokerGame {
     }
 
     /// Validates a raise amount before processing
-    fn validate_raise_amount(&self, player: &PlayerState, total_bet: i32) -> ServerResult<()> {
-        let current_bet = self.get_current_bet();
+    ///
+    /// # Arguments
+    /// * `player` - The player raising
+    /// * `total_bet` - The total bet amount after the raise
+    /// * `current_bet` - The current highest bet in the round
+    ///
+    /// # Returns
+    /// `Ok(())` if the raise is valid, or an error otherwise
+    fn validate_raise_amount(
+        &self,
+        player: &PlayerState,
+        total_bet: i32,
+        current_bet: i32,
+    ) -> ServerResult<()> {
         if current_bet == 0 {
             return Err(ServerError::CannotRaise);
         }
@@ -451,29 +512,49 @@ impl PokerGame {
             return Err(ServerError::NotYourTurn);
         }
 
-        let player = self
-            .players
-            .get_mut(player_id)
-            .ok_or_else(|| ServerError::PlayerNotFound(player_id.to_string()))?;
-
-        let player_call_amount = current_bet - player.current_bet;
+        let pot = self.pot;
 
         match action {
             PlayerAction::Fold => {
-                player.is_folded = true;
-                player.has_acted = true;
+                if let Some(player) = self.players.get_mut(player_id) {
+                    player.is_folded = true;
+                    player.has_acted = true;
+                }
             }
             PlayerAction::Check => {
+                let player_call_amount = current_bet
+                    - self
+                        .players
+                        .get(player_id)
+                        .map(|p| p.current_bet)
+                        .unwrap_or(0);
                 if player_call_amount > 0 {
                     return Err(ServerError::CannotCheck);
                 }
-                player.has_acted = true;
+                if let Some(player) = self.players.get_mut(player_id) {
+                    player.has_acted = true;
+                }
             }
             PlayerAction::Call => {
-                let call_amount = player_call_amount.min(player.chips);
+                let player = self
+                    .players
+                    .get_mut(player_id)
+                    .ok_or_else(|| ServerError::PlayerNotFound(player_id.to_string()))?;
+                let player_chips = player.chips;
+                let call_amount = current_bet
+                    .saturating_sub(player.current_bet)
+                    .min(player_chips);
+                let new_pot = self.calculate_new_pot(call_amount).ok_or_else(|| {
+                    ServerError::InvalidBet("Pot size exceeds maximum allowed".to_string())
+                })?;
+
+                let player = self
+                    .players
+                    .get_mut(player_id)
+                    .ok_or_else(|| ServerError::PlayerNotFound(player_id.to_string()))?;
                 player.chips -= call_amount;
                 player.current_bet += call_amount;
-                self.pot += call_amount;
+                self.pot = new_pot;
                 player.has_acted = true;
 
                 if player.chips == 0 {
@@ -481,12 +562,26 @@ impl PokerGame {
                 }
             }
             PlayerAction::Bet(amount) => {
-                self.validate_bet_amount(player, amount)?;
+                {
+                    let player = self
+                        .players
+                        .get(player_id)
+                        .ok_or_else(|| ServerError::PlayerNotFound(player_id.to_string()))?;
+                    self.validate_bet_amount(player, amount, current_bet, pot)?;
+                }
 
                 let bet_amount = amount;
+                let new_pot = self.calculate_new_pot(bet_amount).ok_or_else(|| {
+                    ServerError::InvalidBet("Pot size exceeds maximum allowed".to_string())
+                })?;
+
+                let player = self
+                    .players
+                    .get_mut(player_id)
+                    .ok_or_else(|| ServerError::PlayerNotFound(player_id.to_string()))?;
                 player.chips -= bet_amount;
                 player.current_bet = bet_amount;
-                self.pot = self.pot.saturating_add(bet_amount);
+                self.pot = new_pot;
                 self.min_raise = bet_amount.saturating_mul(2);
                 player.has_acted = true;
 
@@ -496,73 +591,31 @@ impl PokerGame {
             }
             PlayerAction::Raise(amount) => {
                 let total_bet = current_bet.saturating_add(amount);
-                self.validate_raise_amount(player, total_bet)?;
+                {
+                    let player = self
+                        .players
+                        .get(player_id)
+                        .ok_or_else(|| ServerError::PlayerNotFound(player_id.to_string()))?;
+                    self.validate_raise_amount(player, total_bet, current_bet)?;
+                }
 
+                let player = self
+                    .players
+                    .get(player_id)
+                    .ok_or_else(|| ServerError::PlayerNotFound(player_id.to_string()))?;
                 let actual_raise = total_bet.saturating_sub(player.current_bet);
+                drop(player);
+                let new_pot = self.calculate_new_pot(actual_raise).ok_or_else(|| {
+                    ServerError::InvalidBet("Pot size exceeds maximum allowed".to_string())
+                })?;
 
+                let player = self
+                    .players
+                    .get_mut(player_id)
+                    .ok_or_else(|| ServerError::PlayerNotFound(player_id.to_string()))?;
                 player.chips -= actual_raise;
                 player.current_bet = player.current_bet.saturating_add(actual_raise);
-                self.pot = self.pot.saturating_add(actual_raise);
-                self.min_raise = player.current_bet.saturating_mul(2);
-                player.has_acted = true;
-
-                if player.chips == 0 {
-                    player.is_all_in = true;
-                }
-            }
-                if amount > player.chips {
-                    return Err(ServerError::BetExceedsChips(amount, player.chips));
-                }
-                let max_bet = self.pot.saturating_mul(MAX_BET_MULTIPLIER);
-                if amount > max_bet && player.chips > max_bet {
-                    return Err(ServerError::InvalidBet(format!(
-                        "Bet exceeds maximum allowed: {} (pot: {})",
-                        max_bet, self.pot
-                    )));
-                }
-                if amount > self.max_bet_per_hand {
-                    return Err(ServerError::InvalidBet(format!(
-                        "Bet exceeds table maximum: {}",
-                        self.max_bet_per_hand
-                    )));
-                }
-                if amount < self.min_raise && player.chips > self.min_raise {
-                    return Err(ServerError::MinBet(self.min_raise));
-                }
-
-                let bet_amount = amount;
-                player.chips -= bet_amount;
-                player.current_bet = bet_amount;
-                self.pot = self.pot.saturating_add(bet_amount);
-                self.min_raise = bet_amount.saturating_mul(2);
-                player.has_acted = true;
-
-                if player.chips == 0 {
-                    player.is_all_in = true;
-                }
-            }
-            PlayerAction::Raise(amount) => {
-                if player_call_amount > 0 {
-                    return Err(ServerError::CannotRaise);
-                }
-                let total_bet = current_bet.saturating_add(amount);
-                if total_bet < self.min_raise {
-                    return Err(ServerError::MinRaise(self.min_raise));
-                }
-
-                let required_chips = total_bet.saturating_sub(player.current_bet);
-                if required_chips > player.chips {
-                    return Err(ServerError::RaiseInsufficientChips(
-                        required_chips,
-                        player.chips,
-                    ));
-                }
-
-                let actual_raise = required_chips.min(player.chips);
-
-                player.chips -= actual_raise;
-                player.current_bet = player.current_bet.saturating_add(actual_raise);
-                self.pot = self.pot.saturating_add(actual_raise);
+                self.pot = new_pot;
                 self.min_raise = player.current_bet.saturating_mul(2);
                 player.has_acted = true;
 
@@ -571,10 +624,23 @@ impl PokerGame {
                 }
             }
             PlayerAction::AllIn => {
+                let player = self
+                    .players
+                    .get_mut(player_id)
+                    .ok_or_else(|| ServerError::PlayerNotFound(player_id.to_string()))?;
                 let all_in_amount = player.chips;
+                let new_bet = player.current_bet.saturating_add(all_in_amount);
+                let new_pot = self.calculate_new_pot(all_in_amount).ok_or_else(|| {
+                    ServerError::InvalidBet("Pot size exceeds maximum allowed".to_string())
+                })?;
+
+                let player = self
+                    .players
+                    .get_mut(player_id)
+                    .ok_or_else(|| ServerError::PlayerNotFound(player_id.to_string()))?;
                 player.chips = 0;
-                player.current_bet = player.current_bet.saturating_add(all_in_amount);
-                self.pot = self.pot.saturating_add(all_in_amount);
+                player.current_bet = new_bet;
+                self.pot = new_pot;
                 player.is_all_in = true;
                 player.has_acted = true;
 
@@ -670,6 +736,32 @@ impl PokerGame {
     }
 
     fn deal_community_cards(&mut self, count: usize) {
+        if self.current_street == Street::Showdown {
+            error!("Cannot deal community cards during showdown");
+            return;
+        }
+
+        if count == 0 || count > 5 {
+            error!("Invalid community card count: {}", count);
+            return;
+        }
+
+        let max_cards = match self.current_street {
+            Street::Preflop => 5,
+            Street::Flop => 4,
+            Street::Turn => 5,
+            Street::River => 5,
+            Street::Showdown => 0,
+        };
+
+        if self.community_cards.len() + count > max_cards {
+            error!(
+                "Cannot deal {} cards, would exceed maximum of {}",
+                count, max_cards
+            );
+            return;
+        }
+
         for _ in 0..count {
             if let Some(card) = self.deal_card() {
                 self.community_cards.push(card);
@@ -1623,5 +1715,155 @@ mod tests {
             players.contains(&"p1".to_string()) && players.contains(&"p2".to_string())
         });
         assert!(side_pot.is_some());
+    }
+
+    #[test]
+    fn test_validate_bet_amount_positive() {
+        let tx = tokio::sync::broadcast::channel(100).0;
+        let game = PokerGame::new("test".to_string(), 5, 10, tx);
+        let player = PlayerState::new("p1".to_string(), "Player1".to_string(), 1000);
+
+        let result = game.validate_bet_amount(&player, 100);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_validate_bet_amount_zero() {
+        let tx = tokio::sync::broadcast::channel(100).0;
+        let game = PokerGame::new("test".to_string(), 5, 10, tx);
+        let player = PlayerState::new("p1".to_string(), "Player1".to_string(), 1000);
+
+        assert!(game.validate_bet_amount(&player, 0).is_err());
+        assert!(game.validate_bet_amount(&player, -100).is_err());
+    }
+
+    #[test]
+    fn test_validate_bet_amount_exceeds_chips() {
+        let tx = tokio::sync::broadcast::channel(100).0;
+        let game = PokerGame::new("test".to_string(), 5, 10, tx);
+        let player = PlayerState::new("p1".to_string(), "Player1".to_string(), 100);
+
+        assert!(game.validate_bet_amount(&player, 200).is_err());
+    }
+
+    #[test]
+    fn test_validate_raise_amount_success() {
+        let tx = tokio::sync::broadcast::channel(100).0;
+        let mut game = PokerGame::new("test".to_string(), 5, 10, tx);
+        game.add_player("p1".to_string(), "Player1".to_string(), 1000);
+
+        let player = game.players.get("p1").unwrap();
+        let result = game.validate_raise_amount(player, 50);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_validate_raise_amount_below_minimum() {
+        let tx = tokio::sync::broadcast::channel(100).0;
+        let mut game = PokerGame::new("test".to_string(), 5, 10, tx);
+        game.add_player("p1".to_string(), "Player1".to_string(), 1000);
+
+        let player = game.players.get("p1").unwrap();
+        game.min_raise = 100;
+        let result = game.validate_raise_amount(player, 50);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_calculate_side_pots_two_players() {
+        let tx = tokio::sync::broadcast::channel(100).0;
+        let mut game = PokerGame::new("test".to_string(), 5, 10, tx);
+        game.add_player("p1".to_string(), "Player1".to_string(), 100);
+        game.add_player("p2".to_string(), "Player2".to_string(), 200);
+
+        if let Some(p1) = game.players.get_mut("p1") {
+            p1.current_bet = 100;
+        }
+        if let Some(p2) = game.players.get_mut("p2") {
+            p2.current_bet = 200;
+        }
+
+        let pots = game.calculate_side_pots();
+        assert!(
+            !pots.is_empty(),
+            "Should have at least one pot for two players"
+        );
+
+        let total: i32 = pots.iter().map(|(amount, _)| *amount).sum();
+        assert_eq!(total, 300, "Total in pots should equal total bets");
+    }
+
+    #[test]
+    fn test_calculate_side_pots_all_in_scenario() {
+        let tx = tokio::sync::broadcast::channel(100).0;
+        let mut game = PokerGame::new("test".to_string(), 5, 10, tx);
+        game.add_player("p1".to_string(), "Player1".to_string(), 50);
+        game.add_player("p2".to_string(), "Player2".to_string(), 100);
+        game.add_player("p3".to_string(), "Player3".to_string(), 100);
+
+        if let Some(p1) = game.players.get_mut("p1") {
+            p1.current_bet = 50;
+            p1.is_all_in = true;
+        }
+        if let Some(p2) = game.players.get_mut("p2") {
+            p2.current_bet = 100;
+        }
+        if let Some(p3) = game.players.get_mut("p3") {
+            p3.current_bet = 100;
+        }
+
+        let pots = game.calculate_side_pots();
+
+        let main_pot_amount: i32 = pots
+            .iter()
+            .find(|(_, players)| players.len() == 3)
+            .map(|(amount, _)| *amount)
+            .unwrap_or(0);
+        assert_eq!(
+            main_pot_amount, 150,
+            "Main pot should have 50 from each player"
+        );
+
+        let side_pot_amount: i32 = pots
+            .iter()
+            .filter(|(_, players)| players.len() == 2)
+            .map(|(amount, _)| *amount)
+            .sum();
+        assert_eq!(
+            side_pot_amount, 100,
+            "Side pot should have 50 from p2 and p3"
+        );
+    }
+
+    #[test]
+    fn test_add_to_pot_overflow() {
+        let tx = tokio::sync::broadcast::channel(100).0;
+        let mut game = PokerGame::new("test".to_string(), 5, 10, tx);
+        game.pot = MAX_POT - 100;
+
+        let result = game.add_to_pot(200);
+        assert!(result.is_err(), "Should fail when pot would exceed MAX_POT");
+    }
+
+    #[test]
+    fn test_calculate_new_pot_success() {
+        let tx = tokio::sync::broadcast::channel(100).0;
+        let mut game = PokerGame::new("test".to_string(), 5, 10, tx);
+        game.pot = 100;
+
+        let new_pot = game.calculate_new_pot(50);
+        assert!(new_pot.is_some());
+        assert_eq!(new_pot.unwrap(), 150);
+
+        game.pot = new_pot.unwrap();
+        assert_eq!(game.pot, 150);
+    }
+
+    #[test]
+    fn test_calculate_new_pot_negative() {
+        let tx = tokio::sync::broadcast::channel(100).0;
+        let mut game = PokerGame::new("test".to_string(), 5, 10, tx);
+
+        assert!(game.calculate_new_pot(-50).is_none());
     }
 }
