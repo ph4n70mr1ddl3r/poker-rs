@@ -63,8 +63,24 @@ impl PlayerAction {
         Self::from_value(value, Some(max_chips))
     }
 
-    pub fn from_str(s: &str) -> Option<Self> {
-        Self::from_value(&serde_json::json!(s), None)
+    pub fn parse_action(s: &str) -> Option<Self> {
+        if let Some(action_str) = s.strip_prefix('\"').and_then(|s| s.strip_suffix('\"')) {
+            match action_str {
+                "Fold" => Some(PlayerAction::Fold),
+                "Check" => Some(PlayerAction::Check),
+                "Call" => Some(PlayerAction::Call),
+                "AllIn" => Some(PlayerAction::AllIn),
+                _ => None,
+            }
+        } else {
+            match s {
+                "Fold" => Some(PlayerAction::Fold),
+                "Check" => Some(PlayerAction::Check),
+                "Call" => Some(PlayerAction::Call),
+                "AllIn" => Some(PlayerAction::AllIn),
+                _ => None,
+            }
+        }
     }
 }
 

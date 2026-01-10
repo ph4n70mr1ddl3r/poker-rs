@@ -119,7 +119,7 @@ fn main() {
     App::new()
         .add_plugins(DefaultPlugins.set(WindowPlugin {
             primary_window: Some(Window {
-                title: format!("Texas Hold'em Poker - {}", client_name).into(),
+                title: format!("Texas Hold'em Poker - {}", client_name),
                 resolution: (1200., 700.).into(),
                 ..default()
             }),
@@ -323,7 +323,14 @@ fn setup_network(mut commands: Commands, server_config: Res<ServerConfig>) {
             "type": "connect"
         });
         info!("Sending connect message: {}", connect_msg);
-        let _ = write.send(Message::Text(connect_msg.to_string())).await;
+        if let Err(e) = write.send(Message::Text(connect_msg.to_string())).await {
+            error!("Failed to send connect message: {}", e);
+            let _ = tx.send(ClientNetworkMessage::Error(
+                "Failed to send connect message".to_string(),
+            ));
+            let _ = tx.send(ClientNetworkMessage::Disconnected);
+            return;
+        }
 
         let (write_tx, mut write_rx) = tokio::sync::mpsc::channel::<String>(100);
         let write_task = tokio::spawn(async move {
@@ -340,6 +347,13 @@ fn setup_network(mut commands: Commands, server_config: Res<ServerConfig>) {
             while let Some(result) = read.next().await {
                 match result {
                     Ok(Message::Text(text)) => {
+                        if text.len() > MAX_MESSAGE_SIZE {
+                            error!("Received message too large: {} bytes", text.len());
+                            let _ = tx_clone
+                                .send(ClientNetworkMessage::Error("Message too large".to_string()));
+                            let _ = tx_clone.send(ClientNetworkMessage::Disconnected);
+                            break;
+                        }
                         debug!("Received from server: {} bytes", text.len());
                         if let Ok(server_msg) = crate::network::parse_message(&text) {
                             debug!("Parsed message type");
@@ -997,18 +1011,17 @@ fn update_ui(
                 let chat_input = egui::TextEdit::singleline(&mut *pending_chat_guard)
                     .desired_width(180.0)
                     .hint_text("Type a message...");
-                if ui.add(chat_input).lost_focus() {
-                    if ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                        let chat_text = pending_chat_guard.clone();
-                        if !chat_text.is_empty() {
-                            if let Ok(msg) = serde_json::to_string(&serde_json::json!({
-                                "type": "chat",
-                                "text": chat_text
-                            })) {
-                                let _ = network_res.ui_tx.send(msg);
-                                info!("Sent chat message");
-                                pending_chat_guard.clear();
-                            }
+                if ui.add(chat_input).lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter))
+                {
+                    let chat_text = pending_chat_guard.clone();
+                    if !chat_text.is_empty() {
+                        if let Ok(msg) = serde_json::to_string(&serde_json::json!({
+                            "type": "chat",
+                            "text": chat_text
+                        })) {
+                            let _ = network_res.ui_tx.send(msg);
+                            info!("Sent chat message");
+                            pending_chat_guard.clear();
                         }
                     }
                 }

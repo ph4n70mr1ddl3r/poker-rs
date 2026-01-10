@@ -615,7 +615,10 @@ impl PokerGame {
 
         let mut hand_evals: Vec<(&PlayerState, HandEvaluation)> = active_players
             .iter()
-            .map(|p| (*p, self.evaluate_hand(*p)))
+            .map(|p| {
+                #[allow(clippy::explicit_auto_deref)]
+                (*p, self.evaluate_hand(*p))
+            })
             .collect();
 
         if hand_evals.is_empty() {
@@ -672,6 +675,9 @@ impl PokerGame {
                 }
 
                 let winner_count_in_pot = pot_winner_ids.len() as i32;
+                if winner_count_in_pot == 0 {
+                    continue;
+                }
                 let pot_per_winner = pot_amount / winner_count_in_pot;
                 let remainder = pot_amount % winner_count_in_pot;
 

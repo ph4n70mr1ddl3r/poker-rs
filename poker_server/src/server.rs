@@ -30,7 +30,9 @@ pub struct ServerPlayer {
     pub connected: bool,
     pub ws_sender: Option<Sender<String>>,
     pub seated: bool,
+    #[allow(dead_code)]
     pub session_token: String,
+    #[allow(dead_code)]
     pub session_created_at: DateTime<Utc>,
 }
 
@@ -394,7 +396,7 @@ impl PokerServer {
             if let Some(ref sender) = player.ws_sender {
                 let sender = sender.clone();
                 let player_id = player_id.to_string();
-                let _ = tokio::spawn(async move {
+                tokio::spawn(async move {
                     if let Err(e) = sender.send(message).await {
                         error!("Failed to send message to player {}: {}", player_id, e);
                     }

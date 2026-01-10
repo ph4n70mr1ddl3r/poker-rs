@@ -345,10 +345,9 @@ impl HandEvaluation {
         let description = if is_wheel {
             "5-4-3-2-A (Wheel)".to_string()
         } else {
-            let straight_high_display = Rank::from_u8(straight_high)
+            Rank::from_u8(straight_high)
                 .map(|r| r.to_string())
-                .unwrap_or_else(|| "Unknown".to_string());
-            format!("{}", straight_high_display)
+                .unwrap_or_else(|| "Unknown".to_string())
         };
 
         Self {

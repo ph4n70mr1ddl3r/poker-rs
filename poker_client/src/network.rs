@@ -2,7 +2,6 @@ use crate::game::{
     ActionRequiredUpdate, ChatMessage, GameStateUpdate, PlayerConnectedUpdate, PlayerUpdate,
     ShowdownUpdate,
 };
-use serde_json;
 
 #[derive(Debug, Clone)]
 pub enum NetworkMessage {

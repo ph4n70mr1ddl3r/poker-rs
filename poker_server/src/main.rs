@@ -350,7 +350,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     info!("Shutting down broadcast task...");
     drop(broadcast_task);
-    let _ = inactivity_task.abort();
+    inactivity_task.abort();
 
     info!("Server shutdown complete");
     Ok(())
@@ -366,8 +366,6 @@ fn sanitize_player_name(name: &str) -> String {
             result.push(c);
             has_valid_char = true;
         } else if result.is_empty() {
-            result.push('_');
-        } else {
             result.push('_');
         }
         if result.len() >= max_len {
@@ -435,7 +433,7 @@ impl MessageHandler {
         }
 
         if let Some(action_str) = value["action"].as_str() {
-            if let Some(action) = poker_protocol::PlayerAction::from_str(action_str) {
+            if let Some(action) = poker_protocol::PlayerAction::parse_action(action_str) {
                 self.send_action(action);
             } else if let Some(action) =
                 poker_protocol::PlayerAction::from_value(&value["action"], None)
