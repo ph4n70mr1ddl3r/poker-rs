@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::sync::{Arc, Mutex};
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 mod errors;
 mod types;
@@ -35,14 +35,17 @@ impl NonceCache {
 
     pub fn is_duplicate(&self, nonce: u64) -> bool {
         let now = Instant::now();
+        let expiry_duration = Duration::from_millis(NONCE_EXPIRY_MS);
         let mut entries = match self.entries.lock() {
             Ok(guard) => guard,
-            Err(_) => return false,
+            Err(poisoned) => {
+                let mut entries = poisoned.into_inner();
+                entries.clear();
+                return false;
+            }
         };
 
-        entries.retain(|entry| {
-            now.duration_since(entry.timestamp).as_millis() < NONCE_EXPIRY_MS as u128
-        });
+        entries.retain(|entry| now.duration_since(entry.timestamp) < expiry_duration);
 
         if entries.iter().any(|entry| entry.nonce == nonce) {
             return true;
