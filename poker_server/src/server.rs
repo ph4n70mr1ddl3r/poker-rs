@@ -8,6 +8,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::broadcast;
 use tokio::sync::mpsc::Sender;
+use tokio::sync::Semaphore;
 use tokio::time::{timeout, Duration};
 use uuid::Uuid;
 
@@ -18,6 +19,7 @@ fn lock_game(game: &Arc<Mutex<PokerGame>>) -> parking_lot::MutexGuard<'_, PokerG
 pub const MAX_CONNECTIONS: usize = 100;
 pub const MAX_CONNECTIONS_PER_IP: usize = 5;
 const BROADCAST_SEND_TIMEOUT_MS: u64 = 5000;
+const MAX_BROADCAST_TASKS: usize = 50;
 
 pub type PlayerId = String;
 
@@ -60,6 +62,7 @@ pub struct PokerServer {
     connection_count: usize,
     ip_connections: HashMap<String, usize>,
     session_expiry_hours: u64,
+    broadcast_semaphore: Arc<Semaphore>,
 }
 
 impl PokerServer {
@@ -73,6 +76,7 @@ impl PokerServer {
             connection_count: 0,
             ip_connections: HashMap::new(),
             session_expiry_hours: 24,
+            broadcast_semaphore: Arc::new(Semaphore::new(MAX_BROADCAST_TASKS)),
         }
     }
 
@@ -149,7 +153,6 @@ impl PokerServer {
         if let Some(player) = self.players.get_mut(player_id) {
             player.connected = true;
             player.ws_sender = Some(ws_sender);
-            player.session_token = Uuid::new_v4().to_string();
         }
     }
 
@@ -255,7 +258,6 @@ impl PokerServer {
             ClientMessage::Reconnect(existing_player_id) => {
                 if let Some(player) = self.players.get_mut(&existing_player_id) {
                     player.connected = true;
-                    player.session_token = Uuid::new_v4().to_string();
                     if let Some(session) = self.player_sessions.get(&existing_player_id) {
                         self.send_game_state_to_player(&existing_player_id, session)?;
                     }
@@ -365,12 +367,15 @@ impl PokerServer {
 
             let timeout_duration = Duration::from_millis(BROADCAST_SEND_TIMEOUT_MS);
             let msg_for_send = json;
+            let semaphore = Arc::clone(&self.broadcast_semaphore);
 
             for (player_id, sender) in players {
                 let msg = msg_for_send.clone();
                 let sender = sender.clone();
                 let player_id = player_id.clone();
+                let sem = Arc::clone(&semaphore);
                 tokio::spawn(async move {
+                    let _permit = sem.acquire().await;
                     if let Err(e) = timeout(timeout_duration, sender.send(msg)).await {
                         error!("Timeout sending to player {}: {}", player_id, e);
                     }

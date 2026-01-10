@@ -10,7 +10,6 @@ use std::collections::HashMap;
 use tokio::sync::broadcast;
 
 const MAX_BET_MULTIPLIER: i32 = 10;
-const DEFAULT_MAX_BET_PER_HAND: i32 = 100000;
 
 #[derive(Debug)]
 pub struct PokerGame {
@@ -62,7 +61,7 @@ impl PokerGame {
             tx,
             game_stage: GameStage::WaitingForPlayers,
             hand_number: 0,
-            max_bet_per_hand: DEFAULT_MAX_BET_PER_HAND,
+            max_bet_per_hand: crate::MAX_BET_PER_HAND,
         }
     }
 

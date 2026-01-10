@@ -16,6 +16,7 @@ pub const MAX_RECONNECT_ATTEMPTS: u32 = 10;
 pub const INITIAL_RECONNECT_DELAY_MS: u64 = 1000;
 pub const MAX_RECONNECT_DELAY_MS: u64 = 30000;
 pub const PING_INTERVAL_SECS: u64 = 30;
+pub const MAX_MESSAGE_SIZE: usize = 4096;
 
 mod game;
 mod network;
@@ -618,6 +619,12 @@ fn trigger_reconnection(network_res: &Res<NetworkResources>, _commands: &mut Com
             while let Some(result) = read.next().await {
                 match result {
                     Ok(Message::Text(text)) => {
+                        if text.len() > MAX_MESSAGE_SIZE {
+                            error!("Received message too large: {} bytes", text.len());
+                            let _ = tx_clone
+                                .send(ClientNetworkMessage::Error("Message too large".to_string()));
+                            break;
+                        }
                         if let Ok(server_msg) = crate::network::parse_message(&text) {
                             if let crate::network::NetworkMessage::Ping(timestamp) = server_msg {
                                 let pong_msg = serde_json::json!({

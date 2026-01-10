@@ -9,15 +9,15 @@ use log::{debug, error, info, warn};
 use parking_lot::Mutex;
 use poker_protocol::{ClientMessage, ServerMessage};
 use std::net::SocketAddr;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::net::TcpListener;
 use tokio::signal;
-use tokio::time::{Duration, Instant};
+use tokio::time::Instant;
 use tokio_tungstenite::accept_async;
 use tokio_tungstenite::tungstenite::Message;
 use uuid::Uuid;
-
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 pub const SHUTDOWN_TIMEOUT_SECS: u64 = 5;
 
@@ -38,9 +38,8 @@ impl WindowedRateLimiter {
         }
     }
 
-    pub fn allow(&self) -> bool {
-        let now_ms = Instant::now().elapsed().as_millis() as u64;
-        let mut spins = 0;
+    pub async fn allow(&self) -> bool {
+        let now_ms = tokio::time::Instant::now().elapsed().as_millis() as u64;
 
         loop {
             let window_start = self.window_start.load(Ordering::Acquire);
@@ -59,13 +58,7 @@ impl WindowedRateLimiter {
 
             let current = self.messages.load(Ordering::Acquire);
             if current >= self.max_messages {
-                spins += 1;
-                if spins % 10 == 0 {
-                    std::thread::sleep(std::time::Duration::from_millis(1));
-                }
-                if spins > 100 {
-                    return false;
-                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
                 continue;
             }
 
@@ -97,8 +90,8 @@ impl RateLimiter {
         }
     }
 
-    fn allow(&self) -> bool {
-        self.inner.allow()
+    async fn allow(&self) -> bool {
+        self.inner.allow().await
     }
 }
 
@@ -119,8 +112,8 @@ impl ChatRateLimiter {
         }
     }
 
-    fn allow(&self) -> bool {
-        self.inner.allow()
+    async fn allow(&self) -> bool {
+        self.inner.allow().await
     }
 }
 
@@ -164,9 +157,6 @@ pub struct ServerConfig {
     pub max_connections: usize,
     pub max_connections_per_ip: usize,
     pub session_token_expiry_hours: u64,
-    pub enable_tls: bool,
-    pub tls_cert_path: Option<String>,
-    pub tls_key_path: Option<String>,
     pub max_bet_per_hand: i32,
 }
 
@@ -182,9 +172,6 @@ impl Default for ServerConfig {
             max_connections: MAX_CONNECTIONS,
             max_connections_per_ip: MAX_CONNECTIONS_PER_IP,
             session_token_expiry_hours: SESSION_TOKEN_EXPIRY_HOURS,
-            enable_tls: false,
-            tls_cert_path: None,
-            tls_key_path: None,
             max_bet_per_hand: MAX_BET_PER_HAND,
         }
     }
@@ -192,14 +179,6 @@ impl Default for ServerConfig {
 
 struct ShutdownState {
     should_shutdown: Arc<AtomicBool>,
-}
-
-impl Clone for ShutdownState {
-    fn clone(&self) -> Self {
-        Self {
-            should_shutdown: self.should_shutdown.clone(),
-        }
-    }
 }
 
 impl ShutdownState {
@@ -216,6 +195,14 @@ impl ShutdownState {
     #[allow(dead_code)]
     fn request_shutdown(&self) {
         self.should_shutdown.store(true, Ordering::Relaxed);
+    }
+}
+
+impl Clone for ShutdownState {
+    fn clone(&self) -> Self {
+        Self {
+            should_shutdown: self.should_shutdown.clone(),
+        }
     }
 }
 
@@ -442,7 +429,7 @@ impl MessageHandler {
     }
 
     async fn handle_action(&self, value: &serde_json::Value) {
-        if !self.rate_limiter.allow() {
+        if !self.rate_limiter.allow().await {
             warn!("Player {} action rate limited", self.player_id);
             return;
         }
@@ -502,7 +489,7 @@ impl MessageHandler {
     }
 
     async fn handle_chat(&self, value: &serde_json::Value) {
-        if !self.chat_rate_limiter.allow() {
+        if !self.chat_rate_limiter.allow().await {
             warn!("Player {} chat rate limited", self.player_id);
             self.send_error("Chat rate limit exceeded. Please wait before sending more messages.");
             return;
@@ -625,7 +612,7 @@ async fn handle_connection(
                 Ok(Message::Text(text)) => {
                     last_activity = Instant::now();
 
-                    if !rate_limiter_clone.allow() {
+                    if !rate_limiter_clone.allow().await {
                         warn!("Player {} exceeded rate limit", player_id_clone);
                         let error_msg = ServerMessage::Error("Rate limit exceeded".to_string());
                         if let Ok(json) = serde_json::to_string(&error_msg) {
@@ -712,36 +699,35 @@ async fn handle_connection(
 mod tests {
     use super::*;
 
-    #[test]
-    fn test_rate_limiter_allow() {
+    #[tokio::test]
+    async fn test_rate_limiter_allow() {
         let limiter = RateLimiter::new();
         for _ in 0..100 {
-            assert!(limiter.allow());
+            assert!(limiter.allow().await);
         }
-        assert!(!limiter.allow());
+        assert!(!limiter.allow().await);
     }
 
-    #[test]
-    #[ignore]
-    fn test_rate_limiter_window_reset() {
+    #[tokio::test]
+    async fn test_rate_limiter_window_reset() {
         let limiter = RateLimiter::new();
         for _ in 0..100 {
-            assert!(limiter.allow());
+            assert!(limiter.allow().await);
         }
-        assert!(!limiter.allow());
+        assert!(!limiter.allow().await);
 
-        std::thread::sleep(std::time::Duration::from_millis(1100));
+        tokio::time::sleep(tokio::time::Duration::from_millis(1100)).await;
 
-        assert!(limiter.allow());
+        assert!(limiter.allow().await);
     }
 
-    #[test]
-    fn test_chat_rate_limiter_allow() {
+    #[tokio::test]
+    async fn test_chat_rate_limiter_allow() {
         let limiter = ChatRateLimiter::new();
         for _ in 0..10 {
-            assert!(limiter.allow());
+            assert!(limiter.allow().await);
         }
-        assert!(!limiter.allow());
+        assert!(!limiter.allow().await);
     }
 
     #[test]
