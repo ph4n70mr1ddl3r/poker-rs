@@ -350,11 +350,22 @@ impl HandEvaluation {
                 .unwrap_or_else(|| "Unknown".to_string())
         };
 
+        let primary_rank = if is_wheel { 1 } else { straight_high as i32 };
+
         Self {
             rank: HandRank::Straight,
-            primary_rank: straight_high as i32,
-            tiebreakers: vec![straight_high as i32],
+            primary_rank,
+            tiebreakers: vec![primary_rank],
             description: format!("Straight, {}", description),
+        }
+    }
+
+    pub fn straight_with_wheel() -> Self {
+        Self {
+            rank: HandRank::Straight,
+            primary_rank: 1,
+            tiebreakers: vec![1, 5, 4, 3, 2],
+            description: "Straight, 5-4-3-2-A (Wheel)".to_string(),
         }
     }
 
@@ -422,14 +433,21 @@ impl HandEvaluation {
     }
 
     pub fn straight_flush(straight_high: u8) -> Self {
-        let straight_high_display = Rank::from_u8(straight_high)
-            .map(|r| r.to_string())
-            .unwrap_or_else(|| "Unknown".to_string());
+        let is_wheel = straight_high == 6;
+        let straight_high_display = if is_wheel {
+            "5-4-3-2-A (Wheel)".to_string()
+        } else {
+            Rank::from_u8(straight_high)
+                .map(|r| r.to_string())
+                .unwrap_or_else(|| "Unknown".to_string())
+        };
+
+        let primary_rank = if is_wheel { 1 } else { straight_high as i32 };
 
         Self {
             rank: HandRank::StraightFlush,
-            primary_rank: straight_high as i32,
-            tiebreakers: vec![straight_high as i32],
+            primary_rank,
+            tiebreakers: vec![primary_rank],
             description: format!("Straight Flush, {}", straight_high_display),
         }
     }

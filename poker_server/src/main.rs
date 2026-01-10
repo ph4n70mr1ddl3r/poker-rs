@@ -9,7 +9,7 @@ use log::{debug, error, info, warn};
 use parking_lot::Mutex;
 use poker_protocol::{ClientMessage, ServerMessage};
 use std::net::SocketAddr;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::net::TcpListener;
@@ -21,50 +21,55 @@ use uuid::Uuid;
 
 pub const SHUTDOWN_TIMEOUT_SECS: u64 = 5;
 
-pub struct WindowedRateLimiter {
-    messages: AtomicU64,
-    window_start: AtomicU64,
-    max_messages: u64,
-    window_ms: u64,
+pub struct TokenBucketRateLimiter {
+    tokens: std::sync::atomic::AtomicU64,
+    last_update: std::sync::atomic::AtomicU64,
+    max_tokens: u64,
+    refill_rate: u64,
 }
 
-impl WindowedRateLimiter {
-    pub fn new(max_messages: u64, window_ms: u64) -> Self {
+impl TokenBucketRateLimiter {
+    pub fn new(max_tokens: u64, refill_rate: u64) -> Self {
         Self {
-            messages: AtomicU64::new(0),
-            window_start: AtomicU64::new(0),
-            max_messages,
-            window_ms,
+            tokens: std::sync::atomic::AtomicU64::new(max_tokens),
+            last_update: std::sync::atomic::AtomicU64::new(0),
+            max_tokens,
+            refill_rate,
         }
     }
 
     pub async fn allow(&self) -> bool {
-        let now_ms = tokio::time::Instant::now().elapsed().as_millis() as u64;
+        let now = tokio::time::Instant::now().elapsed().as_millis() as u64;
 
         loop {
-            let window_start = self.window_start.load(Ordering::Acquire);
-            let elapsed = now_ms.saturating_sub(window_start);
+            let tokens = self.tokens.load(std::sync::atomic::Ordering::Relaxed);
+            let last_update = self.last_update.load(std::sync::atomic::Ordering::Relaxed);
 
-            if elapsed > self.window_ms {
-                if self
-                    .window_start
-                    .compare_exchange(window_start, now_ms, Ordering::AcqRel, Ordering::Acquire)
-                    .is_ok()
-                {
-                    self.messages.store(0, Ordering::Release);
+            if tokens == 0 {
+                let elapsed = now.saturating_sub(last_update);
+                let refill = elapsed.saturating_div(1000).saturating_mul(self.refill_rate);
+
+                if refill == 0 {
+                    return false;
                 }
-                continue;
-            }
 
-            let current = self.messages.load(Ordering::Acquire);
-            if current >= self.max_messages {
-                tokio::time::sleep(Duration::from_millis(10)).await;
-                continue;
+                let new_tokens = std::cmp::min(self.max_tokens, tokens.saturating_add(refill));
+
+                if self
+                    .tokens
+                    .compare_exchange(tokens, new_tokens, std::sync::atomic::Ordering::AcqRel, std::sync::atomic::Ordering::Acquire)
+                    .is_err()
+                {
+                    continue;
+                }
+
+                self.last_update.store(now, std::sync::atomic::Ordering::Relaxed);
+                return new_tokens > 0;
             }
 
             if self
-                .messages
-                .compare_exchange(current, current + 1, Ordering::AcqRel, Ordering::Acquire)
+                .tokens
+                .compare_exchange(tokens, tokens - 1, std::sync::atomic::Ordering::AcqRel, std::sync::atomic::Ordering::Acquire)
                 .is_ok()
             {
                 return true;
@@ -73,20 +78,20 @@ impl WindowedRateLimiter {
     }
 }
 
-impl Default for WindowedRateLimiter {
+impl Default for TokenBucketRateLimiter {
     fn default() -> Self {
-        Self::new(100, 1000)
+        Self::new(100, 10)
     }
 }
 
 struct RateLimiter {
-    inner: WindowedRateLimiter,
+    inner: TokenBucketRateLimiter,
 }
 
 impl RateLimiter {
     fn new() -> Self {
         Self {
-            inner: WindowedRateLimiter::new(100, 1000),
+            inner: TokenBucketRateLimiter::new(100, 10),
         }
     }
 
@@ -102,13 +107,13 @@ impl Default for RateLimiter {
 }
 
 struct ChatRateLimiter {
-    inner: WindowedRateLimiter,
+    inner: TokenBucketRateLimiter,
 }
 
 impl ChatRateLimiter {
     fn new() -> Self {
         Self {
-            inner: WindowedRateLimiter::new(10, 10000),
+            inner: TokenBucketRateLimiter::new(10, 1),
         }
     }
 
@@ -136,6 +141,7 @@ fn validate_action_amount(amount: i64, max_allowed: i32) -> Result<i32, String> 
     Ok(amount as i32)
 }
 
+const MAX_BET_MULTIPLIER: i32 = 10;
 const MAX_MESSAGE_SIZE: usize = 4096;
 const MAX_PLAYER_CHIPS: i32 = 1000000;
 const STARTING_CHIPS: i32 = 1000;
@@ -291,6 +297,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut active_connections: Vec<tokio::task::JoinHandle<()>> = Vec::new();
     let mut cleanup_counter = 0;
+    const CLEANUP_INTERVAL: usize = 5;
 
     while !shutdown_state.is_shutdown_requested() {
         let result = listener.accept().await;
@@ -329,7 +336,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         active_connections.push(handle);
 
         cleanup_counter += 1;
-        if cleanup_counter >= 10 {
+        if cleanup_counter >= CLEANUP_INTERVAL {
             cleanup_counter = 0;
             active_connections.retain(|handle| !handle.is_finished());
         }
@@ -358,6 +365,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 fn sanitize_player_name(name: &str) -> String {
     let max_len = 20;
+    let min_len = 1;
     let mut result = String::with_capacity(name.len().min(max_len * 2));
     let mut has_valid_char = false;
 
@@ -375,9 +383,13 @@ fn sanitize_player_name(name: &str) -> String {
 
     if !has_valid_char && result.chars().all(|c| c == '_') {
         result.clear();
+    }
+
+    if result.len() < min_len {
         result.push_str("Player");
     }
 
+    result.truncate(max_len);
     result
 }
 
@@ -707,14 +719,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_rate_limiter_window_reset() {
+    async fn test_rate_limiter_refill() {
         let limiter = RateLimiter::new();
         for _ in 0..100 {
             assert!(limiter.allow().await);
         }
         assert!(!limiter.allow().await);
 
-        tokio::time::sleep(tokio::time::Duration::from_millis(1100)).await;
+        tokio::time::sleep(tokio::time::Duration::from_millis(1500)).await;
 
         assert!(limiter.allow().await);
     }

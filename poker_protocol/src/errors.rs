@@ -16,6 +16,15 @@ pub enum ProtocolError {
 
     #[error("Invalid action amount: {0}")]
     InvalidAmount(String),
+
+    #[error("Invalid HMAC signature")]
+    InvalidSignature,
+
+    #[error("Message timestamp error")]
+    TimestampError,
+
+    #[error("Message expired")]
+    MessageExpired,
 }
 
 impl From<serde_json::Error> for ProtocolError {

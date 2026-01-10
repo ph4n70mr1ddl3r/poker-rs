@@ -11,6 +11,9 @@ use tokio::sync::broadcast;
 
 const MAX_BET_MULTIPLIER: i32 = 10;
 
+const MAX_BROADCAST_RETRIES: u32 = 3;
+const BROADCAST_RETRY_DELAY_MS: u64 = 10;
+
 #[derive(Debug)]
 pub struct PokerGame {
     pub game_id: String,
@@ -32,6 +35,29 @@ pub struct PokerGame {
 }
 
 impl PokerGame {
+    /// Safely broadcasts a message with retry logic
+    fn broadcast_message(&self, message: ServerMessage) {
+        let mut retries = 0;
+        loop {
+            match self.tx.send(message.clone()) {
+                Ok(_) => break,
+                Err(e) => {
+                    if retries >= MAX_BROADCAST_RETRIES {
+                        error!(
+                            "Failed to broadcast message after {} retries: {}",
+                            MAX_BROADCAST_RETRIES, e
+                        );
+                        break;
+                    }
+                    retries += 1;
+                    std::thread::sleep(std::time::Duration::from_millis(
+                        BROADCAST_RETRY_DELAY_MS * retries,
+                    ));
+                }
+            }
+        }
+    }
+
     /// Creates a new poker game instance.
     ///
     /// # Arguments
@@ -91,9 +117,7 @@ impl PokerGame {
             player_name: name,
             chips,
         });
-        if let Err(e) = self.tx.send(update) {
-            error!("Failed to broadcast player connected: {}", e);
-        }
+        self.broadcast_message(update);
 
         if self.players.len() == 2 {
             self.start_hand();
@@ -255,7 +279,7 @@ impl PokerGame {
             current_street: self.current_street.to_string(),
             dealer_position: self.dealer_position,
         };
-        let _ = self.tx.send(ServerMessage::GameStateUpdate(update));
+        self.broadcast_message(ServerMessage::GameStateUpdate(update));
         let players: Vec<PlayerUpdate> = self
             .players
             .values()
@@ -275,9 +299,7 @@ impl PokerGame {
                 },
             })
             .collect();
-        if let Err(e) = self.tx.send(ServerMessage::PlayerUpdates(players)) {
-            error!("Failed to broadcast player updates: {}", e);
-        }
+        self.broadcast_message(ServerMessage::PlayerUpdates(players));
     }
 
     fn request_action(&mut self) {
@@ -301,10 +323,7 @@ impl PokerGame {
             player_chips: player.map(|p| p.chips).unwrap_or(0),
         };
 
-        let msg = ServerMessage::ActionRequired(action_update);
-        if let Err(e) = self.tx.send(msg) {
-            error!("Failed to broadcast action required: {}", e);
-        }
+        self.broadcast_message(ServerMessage::ActionRequired(action_update));
     }
 
     fn get_current_bet(&self) -> i32 {
@@ -333,6 +352,78 @@ impl PokerGame {
             .and_then(|id| self.players.get(id))
     }
 
+    /// Validates a bet amount before processing
+    fn validate_bet_amount(&self, player: &PlayerState, amount: i32) -> ServerResult<()> {
+        if amount <= 0 {
+            return Err(ServerError::InvalidAmount);
+        }
+
+        let current_bet = self.get_current_bet();
+        if current_bet > 0 {
+            return Err(ServerError::CannotBet);
+        }
+
+        if amount > player.chips {
+            return Err(ServerError::BetExceedsChips(amount, player.chips));
+        }
+
+        let max_bet = self.pot.saturating_mul(MAX_BET_MULTIPLIER);
+        if amount > max_bet && player.chips > max_bet {
+            return Err(ServerError::InvalidBet(format!(
+                "Bet exceeds maximum allowed: {} (pot: {})",
+                max_bet, self.pot
+            )));
+        }
+
+        if amount > self.max_bet_per_hand {
+            return Err(ServerError::InvalidBet(format!(
+                "Bet exceeds table maximum: {}",
+                self.max_bet_per_hand
+            )));
+        }
+
+        if amount < self.min_raise && player.chips > self.min_raise {
+            return Err(ServerError::MinBet(self.min_raise));
+        }
+
+        Ok(())
+    }
+
+    /// Validates a raise amount before processing
+    fn validate_raise_amount(&self, player: &PlayerState, total_bet: i32) -> ServerResult<()> {
+        let current_bet = self.get_current_bet();
+        if current_bet == 0 {
+            return Err(ServerError::CannotRaise);
+        }
+
+        if total_bet <= player.current_bet {
+            return Err(ServerError::InvalidRaise(
+                "Raise amount must increase the bet".to_string(),
+            ));
+        }
+
+        if total_bet < self.min_raise {
+            return Err(ServerError::MinRaise(self.min_raise));
+        }
+
+        let required_chips = total_bet.saturating_sub(player.current_bet);
+        if required_chips > player.chips {
+            return Err(ServerError::RaiseInsufficientChips(
+                required_chips,
+                player.chips,
+            ));
+        }
+
+        if total_bet > self.max_bet_per_hand {
+            return Err(ServerError::InvalidBet(format!(
+                "Raise exceeds table maximum: {}",
+                self.max_bet_per_hand
+            )));
+        }
+
+        Ok(())
+    }
+
     /// Processes a player's action in the game.
     ///
     /// # Arguments
@@ -343,20 +434,28 @@ impl PokerGame {
     /// * `Ok(())` if the action was processed successfully
     /// * `Err(ServerError)` if the action is invalid or it's not the player's turn
     pub fn handle_action(&mut self, player_id: &str, action: PlayerAction) -> ServerResult<()> {
-        let current_player = self
-            .get_player_to_act()
-            .ok_or_else(|| ServerError::GameState("No player to act".to_string()))?;
+        let current_bet = self.get_current_bet();
 
-        if current_player.id != player_id {
+        let active_player_ids = self.get_active_player_ids();
+        let current_player_id = self.current_player_id.as_ref();
+
+        let is_player_turn = match current_player_id {
+            Some(id) => id == player_id,
+            None => active_player_ids
+                .first()
+                .map(|id| id == player_id)
+                .unwrap_or(false),
+        };
+
+        if !is_player_turn {
             return Err(ServerError::NotYourTurn);
         }
-
-        let current_bet = self.get_current_bet();
 
         let player = self
             .players
             .get_mut(player_id)
             .ok_or_else(|| ServerError::PlayerNotFound(player_id.to_string()))?;
+
         let player_call_amount = current_bet - player.current_bet;
 
         match action {
@@ -382,14 +481,40 @@ impl PokerGame {
                 }
             }
             PlayerAction::Bet(amount) => {
-                if player_call_amount > 0 {
-                    return Err(ServerError::CannotBet);
+                self.validate_bet_amount(player, amount)?;
+
+                let bet_amount = amount;
+                player.chips -= bet_amount;
+                player.current_bet = bet_amount;
+                self.pot = self.pot.saturating_add(bet_amount);
+                self.min_raise = bet_amount.saturating_mul(2);
+                player.has_acted = true;
+
+                if player.chips == 0 {
+                    player.is_all_in = true;
                 }
+            }
+            PlayerAction::Raise(amount) => {
+                let total_bet = current_bet.saturating_add(amount);
+                self.validate_raise_amount(player, total_bet)?;
+
+                let actual_raise = total_bet.saturating_sub(player.current_bet);
+
+                player.chips -= actual_raise;
+                player.current_bet = player.current_bet.saturating_add(actual_raise);
+                self.pot = self.pot.saturating_add(actual_raise);
+                self.min_raise = player.current_bet.saturating_mul(2);
+                player.has_acted = true;
+
+                if player.chips == 0 {
+                    player.is_all_in = true;
+                }
+            }
                 if amount > player.chips {
                     return Err(ServerError::BetExceedsChips(amount, player.chips));
                 }
                 let max_bet = self.pot.saturating_mul(MAX_BET_MULTIPLIER);
-                if amount > max_bet && player.chips >= max_bet {
+                if amount > max_bet && player.chips > max_bet {
                     return Err(ServerError::InvalidBet(format!(
                         "Bet exceeds maximum allowed: {} (pot: {})",
                         max_bet, self.pot
@@ -556,14 +681,17 @@ impl PokerGame {
         let mut pots = Vec::new();
         let mut players: Vec<_> = self.players.values().filter(|p| !p.is_folded).collect();
 
-        if players.len() < 2 {
+        if players.is_empty() {
             return pots;
         }
 
         players.sort_by_key(|p| p.current_bet);
 
         let min_bet = players[0].current_bet;
-        let total_in_min_pot: i32 = players.iter().map(|p| p.current_bet.min(min_bet)).sum();
+        let total_in_min_pot: i32 = players
+            .iter()
+            .map(|p| p.current_bet.min(min_bet).saturating_sub(0))
+            .sum();
         let min_pot_contributors: Vec<String> = players
             .iter()
             .filter(|p| p.current_bet >= min_bet)
@@ -577,11 +705,15 @@ impl PokerGame {
         let mut remaining_players: Vec<_> =
             players.iter().filter(|p| p.current_bet > min_bet).collect();
 
-        while remaining_players.len() >= 2 {
+        while !remaining_players.is_empty() {
             let next_min = remaining_players[0].current_bet;
-            let contribution = remaining_players
+            let contribution: i32 = remaining_players
                 .iter()
-                .map(|p| p.current_bet.min(next_min))
+                .map(|p| {
+                    let prev_contribution = remaining_players[0].current_bet - min_bet;
+                    let current_contribution = p.current_bet - min_bet;
+                    current_contribution.min(prev_contribution)
+                })
                 .sum();
             let contributors: Vec<String> = remaining_players
                 .iter()
@@ -591,6 +723,10 @@ impl PokerGame {
 
             if contribution > 0 && !contributors.is_empty() {
                 pots.push((contribution, contributors));
+            }
+
+            if remaining_players.len() == 1 {
+                break;
             }
 
             remaining_players = remaining_players
@@ -699,10 +835,7 @@ impl PokerGame {
             }
         }
 
-        let msg = ServerMessage::Showdown(showdown_update);
-        if let Err(e) = self.tx.send(msg) {
-            error!("Failed to broadcast showdown: {}", e);
-        }
+        self.broadcast_message(ServerMessage::Showdown(showdown_update));
 
         self.end_hand();
     }
@@ -761,6 +894,18 @@ impl PokerGame {
 
     fn check_straight_flush(&self, cards: &[Card]) -> Option<HandEvaluation> {
         if let Some(flush_cards) = self.get_flush_cards(cards) {
+            let ranks: Vec<_> = flush_cards.iter().map(|c| c.rank as u8).collect();
+
+            let has_wheel = ranks.contains(&2)
+                && ranks.contains(&3)
+                && ranks.contains(&4)
+                && ranks.contains(&5)
+                && ranks.contains(&14);
+
+            if has_wheel {
+                return Some(HandEvaluation::straight_flush(6));
+            }
+
             return self
                 .check_straight_from_cards(&flush_cards)
                 .map(|eval| HandEvaluation::straight_flush(eval.primary_rank as u8));
@@ -805,16 +950,18 @@ impl PokerGame {
             return Some(HandEvaluation::full_house(three_rank, pair_rank));
         }
 
-        let three_kind_first = three_kind_cards.first();
-        let three_kind_rank = three_kind_first.map(|(r, _)| *r);
-        let pair_for_full_house = pair_cards
-            .iter()
-            .find(|&&(rank, _)| Some(rank) != three_kind_rank);
+        if let Some((three_rank, three_count)) = three_kind_cards.first() {
+            let three_rank_val = *three_rank;
 
-        if let (Some((three_rank, _)), Some(&(pair_rank, _))) =
-            (three_kind_first, pair_for_full_house)
-        {
-            return Some(HandEvaluation::full_house(*three_rank, pair_rank));
+            let pair_for_full_house: Vec<(u8, usize)> = pair_cards
+                .iter()
+                .filter(|&&(rank, _)| rank != three_rank_val)
+                .cloned()
+                .collect();
+
+            if let Some(&(pair_rank, _)) = pair_for_full_house.first() {
+                return Some(HandEvaluation::full_house(three_rank_val, pair_rank));
+            }
         }
 
         None
@@ -861,7 +1008,7 @@ impl PokerGame {
             && ranks.contains(&14);
 
         if has_wheel {
-            return Some(HandEvaluation::straight(6));
+            return Some(HandEvaluation::straight_with_wheel());
         }
 
         let mut straight_high = 0;

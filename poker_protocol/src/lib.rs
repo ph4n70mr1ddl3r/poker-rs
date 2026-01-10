@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::fmt;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 mod errors;
 mod types;
@@ -9,6 +10,138 @@ pub use types::{
     Card, GameStage, GameState, HandEvaluation, HandRank, Player, PlayerState, Rank, Street, Suit,
 };
 pub type ServerResult<T> = std::result::Result<T, ServerError>;
+
+const HMAC_SECRET_LEN: usize = 32;
+const MESSAGE_TIMESTAMP_MAX_DIFF_MS: u64 = 30000;
+
+#[derive(Debug, Clone)]
+pub struct HmacKey([u8; HMAC_SECRET_LEN]);
+
+impl HmacKey {
+    pub fn new() -> Self {
+        let key = ring::hmac::Key::generate(ring::hmac::HMAC_SHA256).unwrap();
+        let key_bytes = key.as_ref().to_vec();
+        let mut array = [0u8; HMAC_SECRET_LEN];
+        array.copy_from_slice(&key_bytes[..HMAC_SECRET_LEN]);
+        Self(array)
+    }
+
+    #[allow(dead_code)]
+    pub fn from_bytes(bytes: &[u8]) -> Option<Self> {
+        if bytes.len() >= HMAC_SECRET_LEN {
+            let mut array = [0u8; HMAC_SECRET_LEN];
+            array.copy_from_slice(&bytes[..HMAC_SECRET_LEN]);
+            Some(Self(array))
+        } else {
+            None
+        }
+    }
+
+    pub fn sign(&self, message: &str) -> Vec<u8> {
+        let key = ring::hmac::Key::new(ring::hmac::HMAC_SHA256, &self.0);
+        ring::hmac::sign(&key, message.as_bytes()).as_ref().to_vec()
+    }
+
+    pub fn verify(&self, message: &str, signature: &[u8]) -> bool {
+        let key = ring::hmac::Key::new(ring::hmac::HMAC_SHA256, &self.0);
+        ring::hmac::verify(&key, message.as_bytes(), signature).is_ok()
+    }
+}
+
+impl Default for HmacKey {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// # Poker Protocol
+///
+/// All messages are JSON-encoded and sent over WebSocket.
+///
+/// ## Client Messages (unified format with "type" field)
+///
+/// ```json
+/// {"type": "Connect"}
+/// ```
+/// Connect to the server and join the game.
+///
+/// ```json
+/// {"type": "Action", "action": "Fold"}
+/// {"type": "Action", "action": "Check"}
+/// {"type": "Action", "action": "Call"}
+/// {"type": "Action", "action": "AllIn"}
+/// {"type": "Action", "action": "Bet", "amount": 100}
+/// {"type": "Action", "action": "Raise", "amount": 50}
+/// ```
+/// Perform a poker action.
+///
+/// ```json
+/// {"type": "Chat", "text": "Hello everyone!"}
+/// ```
+/// Send a chat message.
+///
+/// ```json
+/// {"type": "SitOut"}
+/// ```
+/// Sit out from the current hand.
+///
+/// ```json
+/// {"type": "Return"}
+/// ```
+/// Return to the game after sitting out.
+///
+/// ```json
+/// {"type": "Ping", "timestamp": 1234567890}
+/// ```
+/// Send a ping for keep-alive.
+///
+/// ## Server Messages
+///
+/// ```json
+/// {"type": "Connected", "player_id": "player_id_here"}
+/// ```
+/// Confirmation of connection with player ID.
+///
+/// ```json
+/// {"type": "GameStateUpdate", "game_id": "main_table", "hand_number": 1, "pot": 0, "side_pots": [], "community_cards": [], "current_street": "Pre-Flop", "dealer_position": 0}
+/// ```
+/// Current game state update.
+///
+/// ```json
+/// {"type": "PlayerUpdates", "players": [{"player_id": "...", "player_name": "Player1", "chips": 1000, "current_bet": 0, "has_acted": false, "is_all_in": false, "is_folded": false, "is_sitting_out": false, "hole_cards": ["[hidden]"]}]}
+/// ```
+/// Update on all players' states.
+///
+/// ```json
+/// {"type": "ActionRequired", "player_id": "...", "player_name": "Player1", "min_raise": 20, "current_bet": 10, "player_chips": 990}
+/// ```
+/// Request for player action.
+///
+/// ```json
+/// {"type": "PlayerConnected", "player_id": "...", "player_name": "Player1", "chips": 1000}
+/// ```
+/// Notification of a new player connecting.
+///
+/// ```json
+/// {"type": "PlayerDisconnected", "player_id": "..."}
+/// ```
+/// Notification of a player disconnecting.
+///
+/// ```json
+/// {"type": "Showdown", "community_cards": ["A♥", "K♠", "Q♦"], "hands": [["player_id", ["A♥", "K♠"], "Pair", "Pair of Aces"]], "winners": ["player_id"]}
+/// ```
+/// Showdown results after the final betting round.
+///
+/// ```json
+/// {"type": "Chat", "player_id": "...", "player_name": "Player1", "text": "Hello!", "timestamp": 1234567890}
+/// ```
+/// Chat message from another player.
+///
+/// ```json
+/// {"type": "Error", "message": "Invalid bet amount"}
+/// ```
+/// Error message from the server.
+///
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum PlayerAction {
@@ -98,6 +231,61 @@ impl fmt::Display for PlayerAction {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SignedMessage {
+    pub message: String,
+    pub signature: Vec<u8>,
+    pub timestamp: u64,
+}
+
+impl SignedMessage {
+    pub fn new(message: String, signature: Vec<u8>, timestamp: u64) -> Self {
+        Self {
+            message,
+            signature,
+            timestamp,
+        }
+    }
+
+    pub fn create(message: &ClientMessage, key: &HmacKey) -> Result<Self, ProtocolError> {
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|_| ProtocolError::TimestampError)?
+            .as_millis() as u64;
+
+        let message_json =
+            serde_json::to_string(message).map_err(|_| ProtocolError::JsonSerialize)?;
+
+        let signature = key.sign(&format!("{}{}", timestamp, message_json));
+
+        Ok(Self {
+            message: message_json,
+            signature,
+            timestamp,
+        })
+    }
+
+    pub fn verify(&self, key: &HmacKey) -> Result<ClientMessage, ProtocolError> {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|_| ProtocolError::TimestampError)?
+            .as_millis() as u64;
+
+        if now.saturating_sub(self.timestamp) > MESSAGE_TIMESTAMP_MAX_DIFF_MS {
+            return Err(ProtocolError::MessageExpired);
+        }
+
+        if !key.verify(
+            &format!("{}{}", self.timestamp, self.message),
+            &self.signature,
+        ) {
+            return Err(ProtocolError::InvalidSignature);
+        }
+
+        serde_json::from_str(&self.message).map_err(|_| ProtocolError::JsonDeserialize)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum ClientMessage {
     Connect,
     Reconnect(String),
@@ -105,16 +293,6 @@ pub enum ClientMessage {
     Chat(String),
     SitOut,
     Return,
-}
-
-impl ClientMessage {
-    pub fn with_signature(self, _signature: String) -> Self {
-        self
-    }
-
-    pub fn verify_signature(&self, _signature: &str) -> bool {
-        true
-    }
 }
 
 impl fmt::Display for ClientMessage {
@@ -203,4 +381,113 @@ pub struct ChatMessage {
     pub player_name: String,
     pub text: String,
     pub timestamp: i64,
+}
+
+impl ServerMessage {
+    pub fn to_unified_json(&self) -> Result<String, ProtocolError> {
+        match self {
+            ServerMessage::Connected(player_id) => {
+                serde_json::json!({ "type": "Connected", "player_id": player_id })
+            }
+            ServerMessage::Ping(timestamp) => {
+                serde_json::json!({ "type": "Ping", "timestamp": timestamp })
+            }
+            ServerMessage::Pong(timestamp) => {
+                serde_json::json!({ "type": "Pong", "timestamp": timestamp })
+            }
+            ServerMessage::GameStateUpdate(update) => serde_json::to_value(update)
+                .map_err(|_| ProtocolError::JsonSerialize)?
+                .as_object()
+                .map_or_else(
+                    || Err(ProtocolError::JsonSerialize),
+                    |obj| {
+                        let mut result = serde_json::Map::new();
+                        result.insert(
+                            "type".to_string(),
+                            serde_json::Value::String("GameStateUpdate".to_string()),
+                        );
+                        result.extend(obj.clone());
+                        Ok(serde_json::Value::Object(result))
+                    },
+                ),
+            ServerMessage::PlayerUpdates(updates) => {
+                let updates_json: Vec<serde_json::Value> = updates
+                    .iter()
+                    .map(serde_json::to_value)
+                    .collect::<Result<_, _>>()
+                    .map_err(|_| ProtocolError::JsonSerialize)?;
+                Ok(serde_json::json!({
+                    "type": "PlayerUpdates",
+                    "players": updates_json
+                }))
+            }
+            ServerMessage::ActionRequired(update) => serde_json::to_value(update)
+                .map_err(|_| ProtocolError::JsonSerialize)?
+                .as_object()
+                .map_or_else(
+                    || Err(ProtocolError::JsonSerialize),
+                    |obj| {
+                        let mut result = serde_json::Map::new();
+                        result.insert(
+                            "type".to_string(),
+                            serde_json::Value::String("ActionRequired".to_string()),
+                        );
+                        result.extend(obj.clone());
+                        Ok(serde_json::Value::Object(result))
+                    },
+                ),
+            ServerMessage::PlayerConnected(update) => serde_json::to_value(update)
+                .map_err(|_| ProtocolError::JsonSerialize)?
+                .as_object()
+                .map_or_else(
+                    || Err(ProtocolError::JsonSerialize),
+                    |obj| {
+                        let mut result = serde_json::Map::new();
+                        result.insert(
+                            "type".to_string(),
+                            serde_json::Value::String("PlayerConnected".to_string()),
+                        );
+                        result.extend(obj.clone());
+                        Ok(serde_json::Value::Object(result))
+                    },
+                ),
+            ServerMessage::PlayerDisconnected(update) => {
+                serde_json::json!({
+                    "type": "PlayerDisconnected",
+                    "player_id": update.player_id
+                })
+            }
+            ServerMessage::Showdown(update) => serde_json::to_value(update)
+                .map_err(|_| ProtocolError::JsonSerialize)?
+                .as_object()
+                .map_or_else(
+                    || Err(ProtocolError::JsonSerialize),
+                    |obj| {
+                        let mut result = serde_json::Map::new();
+                        result.insert(
+                            "type".to_string(),
+                            serde_json::Value::String("Showdown".to_string()),
+                        );
+                        result.extend(obj.clone());
+                        Ok(serde_json::Value::Object(result))
+                    },
+                ),
+            ServerMessage::Chat(msg) => {
+                serde_json::json!({
+                    "type": "Chat",
+                    "player_id": msg.player_id,
+                    "player_name": msg.player_name,
+                    "text": msg.text,
+                    "timestamp": msg.timestamp
+                })
+            }
+            ServerMessage::Error(err_msg) => {
+                serde_json::json!({
+                    "type": "Error",
+                    "message": err_msg
+                })
+            }
+        }
+        .and_then(|v| serde_json::to_string(&v).map_err(|_| ProtocolError::JsonSerialize))
+    }
 }

@@ -3,6 +3,10 @@ name = "poker_server"
 version = "0.1.0"
 edition = "2021"
 
+[features]
+default = []
+tls = ["native-tls", "tokio-native-tls"]
+
 [dependencies]
 poker_protocol = { path = "../poker_protocol" }
 tokio = { version = "1.40", features = ["full"] }
@@ -16,8 +20,8 @@ env_logger = "0.11"
 rand = "0.8"
 chrono = { version = "0.4", features = ["std"] }
 parking_lot = "0.12"
-native-tls = "0.2"
-tokio-native-tls = "0.3"
+native-tls = { version = "0.2", optional = true }
+tokio-native-tls = { version = "0.3", optional = true }
 anyhow = "1.0"
 
 [dev-dependencies]

@@ -27,9 +27,7 @@ pub struct ServerPlayer {
     pub connected: bool,
     pub ws_sender: Option<Sender<String>>,
     pub seated: bool,
-    #[allow(dead_code)]
     pub session_token: String,
-    #[allow(dead_code)]
     pub session_created_at: DateTime<Utc>,
 }
 
@@ -46,7 +44,6 @@ impl ServerPlayer {
         }
     }
 
-    #[allow(dead_code)]
     pub fn is_session_expired(&self, expiry_hours: u64) -> bool {
         let expiry_duration = chrono::Duration::hours(expiry_hours as i64);
         Utc::now() - self.session_created_at > expiry_duration
@@ -165,6 +162,72 @@ impl PokerServer {
         if let Some(player) = self.players.get_mut(player_id) {
             player.connected = false;
             player.ws_sender = None;
+
+            let disconnect_msg =
+                ServerMessage::PlayerDisconnected(poker_protocol::PlayerDisconnectedUpdate {
+                    player_id: player_id.to_string(),
+                });
+            let json = match disconnect_msg.to_unified_json() {
+                Ok(json) => json,
+                Err(e) => {
+                    error!("Failed to serialize disconnect message: {}", e);
+                    return;
+                }
+            };
+            self.broadcast_to_game_by_player(player_id, &json);
+        }
+    }
+
+    fn broadcast_to_game_by_player(&self, exclude_player_id: &str, message: &str) {
+        let game_id = match self.player_sessions.get(exclude_player_id) {
+            Some(id) => id.clone(),
+            None => return,
+        };
+
+        let game = self.games.get(&game_id);
+        if let Some(game) = game {
+            let pg = game.lock();
+
+            let players: Vec<(String, tokio::sync::mpsc::Sender<String>)> = {
+                pg.get_players()
+                    .keys()
+                    .filter(|player_id| player_id.as_str() != exclude_player_id)
+                    .filter(|player_id| {
+                        self.players
+                            .get(player_id.as_str())
+                            .map(|p| p.connected)
+                            .unwrap_or(false)
+                    })
+                    .filter_map(|player_id| {
+                        self.players
+                            .get(player_id.as_str())
+                            .and_then(|p| p.ws_sender.as_ref())
+                            .map(|sender| (player_id.clone(), sender.clone()))
+                    })
+                    .collect()
+            };
+
+            drop(pg);
+
+            if players.is_empty() {
+                return;
+            }
+
+            let timeout_duration = Duration::from_millis(BROADCAST_SEND_TIMEOUT_MS);
+            let semaphore = Arc::clone(&self.broadcast_semaphore);
+
+            for (player_id, sender) in players {
+                let msg = message.to_string();
+                let sender = sender.clone();
+                let player_id = player_id.clone();
+                let sem = Arc::clone(&semaphore);
+                tokio::spawn(async move {
+                    let _permit = sem.acquire().await;
+                    if let Err(e) = timeout(timeout_duration, sender.send(msg)).await {
+                        error!("Timeout sending to player {}: {}", player_id, e);
+                    }
+                });
+            }
         }
     }
 
@@ -233,8 +296,13 @@ impl PokerServer {
         drop(poker_game);
 
         let game_state = ServerMessage::PlayerUpdates(players);
-        let json = serde_json::to_string(&game_state)
-            .map_err(|e| ServerError::GameState(e.to_string()))?;
+        let json = match game_state.to_unified_json() {
+            Ok(json) => json,
+            Err(e) => {
+                error!("Failed to serialize game state: {}", e);
+                return Err(ServerError::GameState(e.to_string()));
+            }
+        };
         self.send_to_player(player_id, json);
 
         Ok(())
@@ -330,11 +398,12 @@ impl PokerServer {
     /// * `game_id` - The game to broadcast to
     /// * `message` - The message to send
     pub fn broadcast_to_game(&self, game_id: &str, message: ServerMessage) {
-        let json = match serde_json::to_string(&message) {
+        let json = match message.to_unified_json() {
             Ok(json) => json,
             Err(e) => {
                 error!("Failed to serialize message: {}", e);
-                return;
+                let fallback = serde_json::to_string(&message).unwrap_or_default();
+                fallback
             }
         };
 
@@ -414,7 +483,6 @@ impl PokerServer {
         true
     }
 
-    #[allow(dead_code)]
     pub fn verify_session(&self, player_id: &str, token: &str) -> bool {
         self.players
             .get(player_id)
