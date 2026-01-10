@@ -1,4 +1,5 @@
 use crate::game::PokerGame;
+use chrono::{DateTime, Utc};
 use log::error;
 use parking_lot::Mutex;
 use poker_protocol::{ChatMessage, ClientMessage, PlayerUpdate, ServerMessage};
@@ -28,6 +29,7 @@ pub struct ServerPlayer {
     pub ws_sender: Option<Sender<String>>,
     pub seated: bool,
     pub session_token: String,
+    pub session_created_at: DateTime<Utc>,
 }
 
 impl ServerPlayer {
@@ -39,7 +41,13 @@ impl ServerPlayer {
             ws_sender: None,
             seated: false,
             session_token: Uuid::new_v4().to_string(),
+            session_created_at: Utc::now(),
         }
+    }
+
+    pub fn is_session_expired(&self, expiry_hours: u64) -> bool {
+        let expiry_duration = chrono::Duration::hours(expiry_hours as i64);
+        Utc::now() - self.session_created_at > expiry_duration
     }
 }
 
@@ -50,6 +58,7 @@ pub struct PokerServer {
     tx: broadcast::Sender<ServerMessage>,
     connection_count: usize,
     ip_connections: HashMap<String, usize>,
+    session_expiry_hours: u64,
 }
 
 impl PokerServer {
@@ -62,7 +71,13 @@ impl PokerServer {
             tx: broadcast::channel(100).0,
             connection_count: 0,
             ip_connections: HashMap::new(),
+            session_expiry_hours: 24,
         }
+    }
+
+    /// Sets the session token expiry duration in hours.
+    pub fn set_session_expiry_hours(&mut self, hours: u64) {
+        self.session_expiry_hours = hours;
     }
 
     /// Checks if a new connection can be accepted from the given IP.
@@ -384,7 +399,7 @@ impl PokerServer {
     pub fn verify_session(&self, player_id: &str, token: &str) -> bool {
         self.players
             .get(player_id)
-            .map(|p| p.session_token == token)
+            .map(|p| p.session_token == token && !p.is_session_expired(self.session_expiry_hours))
             .unwrap_or(false)
     }
 }
@@ -488,5 +503,18 @@ mod tests {
 
         let player = server.players.get("player1").unwrap();
         assert!(!player.connected);
+    }
+
+    #[test]
+    fn test_session_expiration() {
+        let mut server = PokerServer::new();
+        server.set_session_expiry_hours(24);
+        server.register_player("player1".to_string(), "TestPlayer".to_string(), 1000);
+
+        let token = server.players.get("player1").unwrap().session_token.clone();
+        assert!(server.verify_session("player1", &token));
+
+        server.set_session_expiry_hours(0);
+        assert!(!server.verify_session("player1", &token));
     }
 }

@@ -10,6 +10,7 @@ use std::collections::HashMap;
 use tokio::sync::broadcast;
 
 const MAX_BET_MULTIPLIER: i32 = 10;
+const DEFAULT_MAX_BET_PER_HAND: i32 = 100000;
 
 #[derive(Debug)]
 pub struct PokerGame {
@@ -28,6 +29,7 @@ pub struct PokerGame {
     pub tx: broadcast::Sender<ServerMessage>,
     pub game_stage: GameStage,
     hand_number: i32,
+    max_bet_per_hand: i32,
 }
 
 impl PokerGame {
@@ -60,7 +62,13 @@ impl PokerGame {
             tx,
             game_stage: GameStage::WaitingForPlayers,
             hand_number: 0,
+            max_bet_per_hand: DEFAULT_MAX_BET_PER_HAND,
         }
+    }
+
+    /// Sets the maximum bet per hand.
+    pub fn set_max_bet_per_hand(&mut self, max_bet: i32) {
+        self.max_bet_per_hand = max_bet.max(0);
     }
 
     /// Returns a reference to the current players in the game.
@@ -379,11 +387,17 @@ impl PokerGame {
                 if amount > player.chips {
                     return Err(ServerError::BetExceedsChips(amount, player.chips));
                 }
-                let max_bet = self.pot * MAX_BET_MULTIPLIER;
+                let max_bet = self.pot.saturating_mul(MAX_BET_MULTIPLIER);
                 if amount > max_bet && player.chips >= max_bet {
                     return Err(ServerError::InvalidBet(format!(
                         "Bet exceeds maximum allowed: {} (pot: {})",
                         max_bet, self.pot
+                    )));
+                }
+                if amount > self.max_bet_per_hand {
+                    return Err(ServerError::InvalidBet(format!(
+                        "Bet exceeds table maximum: {}",
+                        self.max_bet_per_hand
                     )));
                 }
                 if amount < self.min_raise && player.chips > self.min_raise {
@@ -393,8 +407,8 @@ impl PokerGame {
                 let bet_amount = amount;
                 player.chips -= bet_amount;
                 player.current_bet = bet_amount;
-                self.pot += bet_amount;
-                self.min_raise = bet_amount * 2;
+                self.pot = self.pot.saturating_add(bet_amount);
+                self.min_raise = bet_amount.saturating_mul(2);
                 player.has_acted = true;
 
                 if player.chips == 0 {
@@ -405,12 +419,12 @@ impl PokerGame {
                 if player_call_amount > 0 {
                     return Err(ServerError::CannotRaise);
                 }
-                let total_bet = current_bet + amount;
+                let total_bet = current_bet.saturating_add(amount);
                 if total_bet < self.min_raise {
                     return Err(ServerError::MinRaise(self.min_raise));
                 }
 
-                let required_chips = total_bet - player.current_bet;
+                let required_chips = total_bet.saturating_sub(player.current_bet);
                 if required_chips > player.chips {
                     return Err(ServerError::RaiseInsufficientChips(
                         required_chips,
@@ -421,9 +435,9 @@ impl PokerGame {
                 let actual_raise = required_chips.min(player.chips);
 
                 player.chips -= actual_raise;
-                player.current_bet += actual_raise;
-                self.pot += actual_raise;
-                self.min_raise = player.current_bet * 2;
+                player.current_bet = player.current_bet.saturating_add(actual_raise);
+                self.pot = self.pot.saturating_add(actual_raise);
+                self.min_raise = player.current_bet.saturating_mul(2);
                 player.has_acted = true;
 
                 if player.chips == 0 {
@@ -433,13 +447,17 @@ impl PokerGame {
             PlayerAction::AllIn => {
                 let all_in_amount = player.chips;
                 player.chips = 0;
-                player.current_bet += all_in_amount;
-                self.pot += all_in_amount;
+                player.current_bet = player.current_bet.saturating_add(all_in_amount);
+                self.pot = self.pot.saturating_add(all_in_amount);
                 player.is_all_in = true;
                 player.has_acted = true;
 
-                if all_in_amount > current_bet {
-                    self.min_raise = player.current_bet * 2;
+                let new_total_bet = player.current_bet;
+                if new_total_bet > current_bet {
+                    let potential_min_raise = new_total_bet.saturating_mul(2);
+                    if potential_min_raise > self.min_raise {
+                        self.min_raise = potential_min_raise;
+                    }
                 }
             }
         }

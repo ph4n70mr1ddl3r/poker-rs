@@ -150,6 +150,9 @@ const CHANNEL_CAPACITY: usize = 100;
 const INACTIVITY_TIMEOUT_MS: u64 = 600000;
 const MAX_CONNECTIONS: usize = 100;
 const MAX_CONNECTIONS_PER_IP: usize = 5;
+const SESSION_TOKEN_EXPIRY_HOURS: u64 = 24;
+const MAX_BET_MULTIPLIER: i32 = 10;
+const MAX_BET_PER_HAND: i32 = 100000;
 
 #[derive(Clone)]
 pub struct ServerConfig {
@@ -161,6 +164,11 @@ pub struct ServerConfig {
     pub inactivity_timeout_ms: u64,
     pub max_connections: usize,
     pub max_connections_per_ip: usize,
+    pub session_token_expiry_hours: u64,
+    pub enable_tls: bool,
+    pub tls_cert_path: Option<String>,
+    pub tls_key_path: Option<String>,
+    pub max_bet_per_hand: i32,
 }
 
 impl Default for ServerConfig {
@@ -174,6 +182,11 @@ impl Default for ServerConfig {
             inactivity_timeout_ms: INACTIVITY_TIMEOUT_MS,
             max_connections: MAX_CONNECTIONS,
             max_connections_per_ip: MAX_CONNECTIONS_PER_IP,
+            session_token_expiry_hours: SESSION_TOKEN_EXPIRY_HOURS,
+            enable_tls: false,
+            tls_cert_path: None,
+            tls_key_path: None,
+            max_bet_per_hand: MAX_BET_PER_HAND,
         }
     }
 }
@@ -214,7 +227,6 @@ async fn wait_for_shutdown_signal() {
             signal::ctrl_c().await.expect("Failed to listen for Ctrl+C");
         };
 
-        #[allow(deprecated)]
         let terminate = async {
             signal::unix::signal(signal::unix::SignalKind::terminate())
                 .expect("Failed to install signal handler")

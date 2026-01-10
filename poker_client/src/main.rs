@@ -97,7 +97,7 @@ enum ConnectionState {
 struct NetworkResources {
     rx: Arc<Mutex<mpsc::Receiver<ClientNetworkMessage>>>,
     ui_tx: mpsc::Sender<String>,
-    _runtime: Runtime,
+    runtime: Arc<Runtime>,
     server_addr: String,
     reconnect_state: Arc<Mutex<ReconnectState>>,
     connection_state: Arc<Mutex<ConnectionState>>,
@@ -245,6 +245,7 @@ fn setup_network(mut commands: Commands, server_config: Res<ServerConfig>) {
             return;
         }
     };
+    let runtime = Arc::new(rt);
     let (tx, rx) = mpsc::channel::<ClientNetworkMessage>();
     let (ui_tx, ui_rx) = mpsc::channel::<String>();
 
@@ -264,8 +265,9 @@ fn setup_network(mut commands: Commands, server_config: Res<ServerConfig>) {
     let tx_for_reconnect = tx.clone();
     let ui_tx_for_task = ui_tx.clone();
     let tx_for_network_clone = tx.clone();
+    let runtime_clone = runtime.clone();
 
-    let task = rt.spawn(async move {
+    let task = runtime_clone.spawn(async move {
         let tx = tx_for_network_clone;
         let ui_tx = ui_tx_for_task;
 
@@ -418,7 +420,7 @@ fn setup_network(mut commands: Commands, server_config: Res<ServerConfig>) {
     commands.insert_resource(NetworkResources {
         rx: rx_arc,
         ui_tx,
-        _runtime: rt,
+        runtime,
         server_addr,
         reconnect_state,
         connection_state,
@@ -542,6 +544,7 @@ fn trigger_reconnection(network_res: &Res<NetworkResources>, _commands: &mut Com
     let reconnect_state = network_res.reconnect_state.clone();
     let connection_state = network_res.connection_state.clone();
     let network_task = network_res.network_task.clone();
+    let runtime = network_res.runtime.clone();
 
     let attempt = {
         let state = match reconnect_state.lock() {
@@ -559,13 +562,11 @@ fn trigger_reconnection(network_res: &Res<NetworkResources>, _commands: &mut Com
         *state = ConnectionState::Reconnecting(attempt);
     }
 
-    let rt = Runtime::new().expect("Failed to create runtime for reconnection");
-
     let (tx, _) = mpsc::channel::<ClientNetworkMessage>();
     let tx_clone = tx.clone();
     let ui_tx = network_res.ui_tx.clone();
 
-    let task = rt.spawn(async move {
+    let task = runtime.spawn(async move {
         let (ws_stream, connected_addr) =
             match connect_with_retry(&server_addr, &tx_clone, &reconnect_state).await {
                 Ok(result) => result,
