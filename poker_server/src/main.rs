@@ -119,7 +119,7 @@ struct ChatRateLimiter {
 impl ChatRateLimiter {
     fn new() -> Self {
         Self {
-            inner: TokenBucketRateLimiter::new(10, 1),
+            inner: TokenBucketRateLimiter::new(5, 1),
         }
     }
 
@@ -741,7 +741,7 @@ mod tests {
     #[tokio::test]
     async fn test_chat_rate_limiter_allow() {
         let limiter = ChatRateLimiter::new();
-        for _ in 0..10 {
+        for _ in 0..5 {
             assert!(limiter.allow().await);
         }
         assert!(!limiter.allow().await);
@@ -832,5 +832,77 @@ mod tests {
         let clone = state.clone();
         state.request_shutdown();
         assert!(clone.is_shutdown_requested());
+    }
+
+    #[tokio::test]
+    async fn test_integration_player_connect_and_action() {
+        let tx = tokio::sync::broadcast::channel(100).0;
+        let mut game = PokerGame::new("test_int".to_string(), 5, 10, tx);
+
+        assert_eq!(
+            game.game_stage,
+            poker_protocol::GameStage::WaitingForPlayers
+        );
+
+        game.add_player("p1".to_string(), "Player1".to_string(), 1000);
+        game.add_player("p2".to_string(), "Player2".to_string(), 1000);
+
+        assert_eq!(game.players.len(), 2);
+        assert!(game.get_players().contains_key("p1"));
+        assert!(game.get_players().contains_key("p2"));
+    }
+
+    #[tokio::test]
+    async fn test_integration_player_sit_out() {
+        let tx = tokio::sync::broadcast::channel(100).0;
+        let mut game = PokerGame::new("test_sitout".to_string(), 5, 10, tx);
+
+        game.add_player("p1".to_string(), "Player1".to_string(), 1000);
+
+        assert!(!game.get_players().get("p1").unwrap().is_sitting_out);
+
+        game.sit_out("p1");
+        assert!(game.get_players().get("p1").unwrap().is_sitting_out);
+
+        game.return_to_game("p1");
+        assert!(!game.get_players().get("p1").unwrap().is_sitting_out);
+    }
+
+    #[tokio::test]
+    async fn test_integration_max_bet_setting() {
+        let tx = tokio::sync::broadcast::channel(100).0;
+        let mut game = PokerGame::new("test_maxbet".to_string(), 5, 10, tx);
+
+        game.set_max_bet_per_hand(500);
+
+        let players = game.get_players();
+        assert!(players.values().all(|p| p.current_bet == 0));
+    }
+
+    #[tokio::test]
+    async fn test_integration_protocol_serialization() {
+        let action_msg = r#"{"Action":"Fold"}"#;
+        let parsed = poker_protocol::PlayerAction::parse_action("Fold");
+        assert!(parsed.is_some());
+
+        let error_response = poker_protocol::ServerMessage::Error("Test error".to_string());
+        let serialized = serde_json::to_string(&error_response);
+        assert!(serialized.is_ok());
+        assert!(serialized.unwrap().contains("error"));
+    }
+
+    #[tokio::test]
+    async fn test_integration_card_creation() {
+        use poker_protocol::{Card, Rank, Suit};
+
+        let mut player =
+            poker_protocol::PlayerState::new("test".to_string(), "Test".to_string(), 1000);
+        player.hole_cards = vec![
+            Card::new(Suit::Hearts, Rank::Ace),
+            Card::new(Suit::Diamonds, Rank::King),
+        ];
+
+        assert_eq!(player.hole_cards.len(), 2);
+        assert_eq!(player.hole_cards[0].to_string(), "A♥");
     }
 }

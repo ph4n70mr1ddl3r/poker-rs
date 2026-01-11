@@ -34,10 +34,16 @@ pub struct PokerGame {
 }
 
 impl PokerGame {
-    /// Safely broadcasts a message with retry logic
+    /// Safely broadcasts a message to all connected players.
+    /// Logs failures for monitoring purposes.
     fn broadcast_message(&self, message: ServerMessage) {
-        if let Err(e) = self.tx.send(message) {
-            error!("Failed to broadcast message: {}", e);
+        match self.tx.send(message) {
+            Ok(receiver_count) => {
+                debug!("Broadcast sent to {} receivers", receiver_count);
+            }
+            Err(e) => {
+                error!("Failed to broadcast message: {} (no active receivers)", e);
+            }
         }
     }
 
@@ -409,7 +415,7 @@ impl PokerGame {
     /// # Arguments
     /// * `player` - The player raising
     /// * `total_bet` - The total bet amount after the raise
-    /// * `current_bet` - The current highest bet in the round
+    /// * `_current_bet` - Reserved for future use (e.g., min-raise calculations based on current bet)
     ///
     /// # Returns
     /// `Ok(())` if the raise is valid, or an error otherwise
