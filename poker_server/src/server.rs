@@ -263,7 +263,9 @@ impl PokerServer {
         let connected_msg = ServerMessage::Connected(player_id.to_string());
         let json = serde_json::to_string(&connected_msg)
             .map_err(|e| ServerError::GameState(e.to_string()))?;
-        self.send_to_player(player_id, json);
+        if let Err(e) = self.send_to_player(player_id, json) {
+            warn!("Failed to send connected message to {}: {}", player_id, e);
+        }
 
         self.send_game_state_to_player(player_id, game_id)?;
 
@@ -303,7 +305,9 @@ impl PokerServer {
                 return Err(ServerError::GameState(e.to_string()));
             }
         };
-        self.send_to_player(player_id, json);
+        if let Err(e) = self.send_to_player(player_id, json) {
+            warn!("Failed to send game state to {}: {}", player_id, e);
+        }
 
         Ok(())
     }
@@ -474,19 +478,20 @@ impl PokerServer {
     /// # Arguments
     /// * `player_id` - The target player
     /// * `message` - The message to send
-    pub fn send_to_player(&self, player_id: &str, message: String) -> bool {
-        let player = match self.players.get(player_id) {
-            Some(p) => p,
-            None => return false,
-        };
+    pub fn send_to_player(&self, player_id: &str, message: String) -> ServerResult<()> {
+        let player = self
+            .players
+            .get(player_id)
+            .ok_or_else(|| ServerError::PlayerNotFound(player_id.to_string()))?;
 
-        let sender = match player.ws_sender.as_ref() {
-            Some(s) => s.clone(),
-            None => return false,
-        };
+        let sender = player
+            .ws_sender
+            .as_ref()
+            .ok_or_else(|| ServerError::PlayerNotFound(player_id.to_string()))?;
 
         let player_id = player_id.to_string();
         let sem = Arc::clone(&self.send_semaphore);
+        let sender = sender.clone();
 
         tokio::spawn(async move {
             let _permit = sem.acquire().await;
@@ -495,7 +500,7 @@ impl PokerServer {
             }
         });
 
-        true
+        Ok(())
     }
 
     #[allow(dead_code)]

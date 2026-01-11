@@ -5,7 +5,7 @@ use futures::StreamExt;
 use std::env;
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
-use tokio::runtime::Runtime;
+use tokio::runtime::Handle;
 use tokio::time::{timeout, Duration};
 use tokio_tungstenite::tungstenite::Message;
 
@@ -99,7 +99,7 @@ enum ConnectionState {
 struct NetworkResources {
     rx: Arc<Mutex<mpsc::Receiver<ClientNetworkMessage>>>,
     ui_tx: mpsc::Sender<String>,
-    runtime: Arc<Runtime>,
+    runtime: Arc<Handle>,
     server_addr: String,
     reconnect_state: Arc<Mutex<ReconnectState>>,
     connection_state: Arc<Mutex<ConnectionState>>,
@@ -202,10 +202,14 @@ async fn connect_with_retry(
             }
             Ok(Err(e)) => {
                 warn!("Connection attempt failed: {}", e);
-                let attempt = reconnect_state
-                    .lock()
-                    .map_err(|_| "Mutex poisoned")?
-                    .attempt;
+                let attempt = match reconnect_state.lock() {
+                    Ok(guard) => guard.attempt,
+                    Err(_) => {
+                        let _ = tx_for_network
+                            .send(ClientNetworkMessage::Error("Mutex poisoned".to_string()));
+                        continue;
+                    }
+                };
                 let _ = tx_for_network.send(ClientNetworkMessage::Error(format!(
                     "Connection failed (attempt {}): {}",
                     attempt, e
@@ -213,10 +217,14 @@ async fn connect_with_retry(
             }
             Err(_) => {
                 warn!("Connection timed out");
-                let attempt = reconnect_state
-                    .lock()
-                    .map_err(|_| "Mutex poisoned")?
-                    .attempt;
+                let attempt = match reconnect_state.lock() {
+                    Ok(guard) => guard.attempt,
+                    Err(_) => {
+                        let _ = tx_for_network
+                            .send(ClientNetworkMessage::Error("Mutex poisoned".to_string()));
+                        continue;
+                    }
+                };
                 let _ = tx_for_network.send(ClientNetworkMessage::Error(format!(
                     "Connection timed out (attempt {})",
                     attempt
@@ -235,19 +243,7 @@ struct ServerConfig {
 }
 
 fn setup_network(mut commands: Commands, server_config: Res<ServerConfig>) {
-    let rt = match Runtime::new() {
-        Ok(rt) => rt,
-        Err(e) => {
-            error!("Failed to create Tokio runtime: {}. Application cannot continue without async runtime.", e);
-            commands.insert_resource(AppState {
-                game_state: PokerGameState::new(),
-                connected: false,
-                raise_amount: Mutex::new(String::new()),
-            });
-            return;
-        }
-    };
-    let runtime = Arc::new(rt);
+    let runtime = Arc::new(Handle::current());
     let (tx, rx) = mpsc::channel::<ClientNetworkMessage>();
     let (ui_tx, ui_rx) = mpsc::channel::<String>();
 

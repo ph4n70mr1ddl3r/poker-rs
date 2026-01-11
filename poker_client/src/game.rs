@@ -7,6 +7,7 @@ pub use poker_protocol::{
 };
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct Player {
     pub id: String,
     pub name: String,
@@ -116,34 +117,38 @@ impl PokerGameState {
     }
 
     pub fn update_player(&mut self, update: PlayerUpdate) {
-        let player = self
-            .players
+        self.players
             .entry(update.player_id.clone())
+            .and_modify(|player| {
+                player.name = update.player_name.clone();
+                player.chips = update.chips;
+                player.current_bet = update.current_bet;
+                player.has_acted = update.has_acted;
+                player.is_all_in = update.is_all_in;
+                player.is_folded = update.is_folded;
+                player.is_sitting_out = update.is_sitting_out;
+                player.hole_cards = update
+                    .hole_cards
+                    .iter()
+                    .filter(|c| !c.is_empty())
+                    .cloned()
+                    .collect();
+            })
             .or_insert_with(|| Player {
                 id: update.player_id.clone(),
                 name: update.player_name.clone(),
                 chips: update.chips,
-                current_bet: 0,
-                has_acted: false,
-                is_all_in: false,
-                is_folded: false,
-                is_sitting_out: false,
-                hole_cards: Vec::new(),
+                current_bet: update.current_bet,
+                has_acted: update.has_acted,
+                is_all_in: update.is_all_in,
+                is_folded: update.is_folded,
+                is_sitting_out: update.is_sitting_out,
+                hole_cards: update
+                    .hole_cards
+                    .iter()
+                    .filter(|c| !c.is_empty())
+                    .cloned()
+                    .collect(),
             });
-
-        player.id = update.player_id;
-        player.name = update.player_name;
-        player.chips = update.chips;
-        player.current_bet = update.current_bet;
-        player.has_acted = update.has_acted;
-        player.is_all_in = update.is_all_in;
-        player.is_folded = update.is_folded;
-        player.is_sitting_out = update.is_sitting_out;
-        player.hole_cards = update
-            .hole_cards
-            .iter()
-            .filter(|c| !c.is_empty())
-            .cloned()
-            .collect();
     }
 }

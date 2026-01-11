@@ -494,7 +494,9 @@ impl MessageHandler {
         let error_msg = ServerMessage::Error(error.to_string());
         if let Ok(json) = serde_json::to_string(&error_msg) {
             let server = self.server.lock();
-            server.send_to_player(&self.player_id, json);
+            if let Err(e) = server.send_to_player(&self.player_id, json) {
+                warn!("Failed to send error to {}: {}", self.player_id, e);
+            }
         }
     }
 
@@ -533,7 +535,9 @@ impl MessageHandler {
         let pong_msg = ServerMessage::Pong(timestamp);
         if let Ok(json) = serde_json::to_string(&pong_msg) {
             let server = self.server.lock();
-            server.send_to_player(&self.player_id, json);
+            if let Err(e) = server.send_to_player(&self.player_id, json) {
+                warn!("Failed to send pong to {}: {}", self.player_id, e);
+            }
         }
     }
 
@@ -597,6 +601,7 @@ async fn handle_connection(
     let server_for_read = Arc::clone(&server);
     let server_for_cleanup = Arc::clone(&server);
     let player_id_clone = player_id.clone();
+    let player_id_for_cleanup = player_id.clone();
     let rate_limiter_clone = Arc::clone(&rate_limiter);
     let chat_rate_limiter_clone = Arc::clone(&chat_rate_limiter);
     let rate_limiter_for_handler = Arc::clone(&rate_limiter_clone);
@@ -611,10 +616,11 @@ async fn handle_connection(
         let mut stream = read;
         let mut last_activity = Instant::now();
         let server_for_read = server_for_read;
+        let player_id = player_id_clone;
 
         while let Some(result) = stream.next().await {
             if last_activity.elapsed() > Duration::from_millis(INACTIVITY_TIMEOUT_MS) {
-                warn!("Player {} timed out due to inactivity", player_id_clone);
+                warn!("Player {} timed out due to inactivity", player_id);
                 break;
             }
 
@@ -623,29 +629,29 @@ async fn handle_connection(
                     last_activity = Instant::now();
 
                     if !rate_limiter_clone.allow().await {
-                        warn!("Player {} exceeded rate limit", player_id_clone);
+                        warn!("Player {} exceeded rate limit", player_id);
                         let error_msg = ServerMessage::Error("Rate limit exceeded".to_string());
                         if let Ok(json) = serde_json::to_string(&error_msg) {
                             let server = server_for_read.lock();
-                            server.send_to_player(&player_id_clone, json);
+                            if let Err(e) = server.send_to_player(&player_id, json) {
+                                warn!("Failed to send rate limit error: {}", e);
+                            }
                         }
                         break;
                     }
 
                     if text.len() > MAX_MESSAGE_SIZE {
-                        warn!(
-                            "Message from {} too large: {} bytes",
-                            player_id_clone,
-                            text.len()
-                        );
+                        warn!("Message from {} too large: {} bytes", player_id, text.len());
                         let error_msg = ServerMessage::Error("Message too large".to_string());
                         if let Ok(json) = serde_json::to_string(&error_msg) {
                             let server = server_for_read.lock();
-                            server.send_to_player(&player_id_clone, json);
+                            if let Err(e) = server.send_to_player(&player_id, json) {
+                                warn!("Failed to send size error: {}", e);
+                            }
                         }
                         break;
                     }
-                    debug!("Received from {}: {}", player_id_clone, text);
+                    debug!("Received from {}: {}", player_id, text);
 
                     if let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) {
                         if let Some(type_obj) = value.get("type") {
@@ -682,7 +688,7 @@ async fn handle_connection(
                     }
                 }
                 Ok(Message::Close(_)) => {
-                    debug!("Client {} disconnected", player_id_clone);
+                    debug!("Client {} disconnected", player_id);
                     break;
                 }
                 Err(e) => {
@@ -699,6 +705,7 @@ async fn handle_connection(
 
     {
         let mut s = server_for_cleanup.lock();
+        s.disconnect_player(&player_id_for_cleanup);
         s.unregister_connection(&ip);
     }
 
