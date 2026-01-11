@@ -23,17 +23,20 @@ pub const SHUTDOWN_TIMEOUT_SECS: u64 = 5;
 
 pub struct TokenBucketRateLimiter {
     tokens: std::sync::atomic::AtomicU64,
-    last_update: std::sync::atomic::AtomicU64,
+    last_update_ms: std::sync::atomic::AtomicU64,
     max_tokens: u64,
     refill_rate: u64,
 }
 
 impl TokenBucketRateLimiter {
     pub fn new(max_tokens: u64, refill_rate: u64) -> Self {
-        let now = tokio::time::Instant::now().elapsed().as_millis() as u64;
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
         Self {
             tokens: std::sync::atomic::AtomicU64::new(max_tokens),
-            last_update: std::sync::atomic::AtomicU64::new(now),
+            last_update_ms: std::sync::atomic::AtomicU64::new(now_ms),
             max_tokens,
             refill_rate,
         }
@@ -41,12 +44,17 @@ impl TokenBucketRateLimiter {
 
     pub async fn allow(&self) -> bool {
         loop {
-            let now = tokio::time::Instant::now().elapsed().as_millis() as u64;
+            let now_ms = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_millis() as u64;
             let tokens = self.tokens.load(std::sync::atomic::Ordering::Relaxed);
-            let last_update = self.last_update.load(std::sync::atomic::Ordering::Relaxed);
+            let last_update_ms = self
+                .last_update_ms
+                .load(std::sync::atomic::Ordering::Relaxed);
 
-            let elapsed = now.saturating_sub(last_update);
-            let refill = elapsed
+            let elapsed_ms = now_ms.saturating_sub(last_update_ms);
+            let refill = elapsed_ms
                 .saturating_div(1000)
                 .saturating_mul(self.refill_rate);
 
@@ -73,8 +81,8 @@ impl TokenBucketRateLimiter {
                 .is_ok()
             {
                 if refill > 0 {
-                    self.last_update
-                        .store(now, std::sync::atomic::Ordering::Relaxed);
+                    self.last_update_ms
+                        .store(now_ms, std::sync::atomic::Ordering::Relaxed);
                 }
                 return true;
             }

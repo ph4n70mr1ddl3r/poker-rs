@@ -27,6 +27,7 @@ pub struct ServerPlayer {
     pub connected: bool,
     pub ws_sender: Option<Sender<String>>,
     pub seated: bool,
+    #[allow(dead_code)]
     pub session_token: String,
     pub session_created_at: DateTime<Utc>,
 }
@@ -256,11 +257,8 @@ impl PokerServer {
         self.player_sessions
             .insert(player_id.to_string(), game_id.to_string());
 
-        let mut poker_game = game.lock();
-
-        poker_game.add_player(player_id.to_string(), player.name.clone(), player.chips);
-
-        drop(poker_game);
+        game.lock()
+            .add_player(player_id.to_string(), player.name.clone(), player.chips);
 
         let connected_msg = ServerMessage::Connected(player_id.to_string());
         let json = serde_json::to_string(&connected_msg)
@@ -448,8 +446,6 @@ impl PokerServer {
                     .collect()
             };
 
-            drop(pg);
-
             if players.is_empty() {
                 return;
             }
@@ -502,6 +498,7 @@ impl PokerServer {
         true
     }
 
+    #[allow(dead_code)]
     pub fn verify_session(&self, player_id: &str, token: &str) -> bool {
         self.players
             .get(player_id)

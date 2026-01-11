@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::fmt;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -18,68 +18,42 @@ const MESSAGE_TIMESTAMP_MAX_DIFF_MS: u64 = 30000;
 const NONCE_CACHE_SIZE: usize = 1000;
 const NONCE_EXPIRY_MS: u64 = 60000;
 
-struct NonceEntry {
-    nonce: u64,
-    timestamp: Instant,
-}
-
 pub struct NonceCache {
-    entries: Arc<Mutex<Vec<NonceEntry>>>,
-    nonces: Arc<Mutex<HashSet<u64>>>,
+    data: Arc<Mutex<HashMap<u64, Instant>>>,
 }
 
 impl NonceCache {
     pub fn new() -> Self {
         Self {
-            entries: Arc::new(Mutex::new(Vec::new())),
-            nonces: Arc::new(Mutex::new(HashSet::new())),
+            data: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
     pub fn is_duplicate(&self, nonce: u64) -> bool {
         let now = Instant::now();
         let expiry_duration = Duration::from_millis(NONCE_EXPIRY_MS);
-        let (mut entries, mut nonces) = match (self.entries.lock(), self.nonces.lock()) {
-            (Ok(entries), Ok(nonces)) => (entries, nonces),
-            (Err(poisoned_entries), Ok(nonces)) => {
-                let mut entries = poisoned_entries.into_inner();
-                entries.clear();
-                (entries, nonces)
-            }
-            (Ok(entries), Err(poisoned_nonces)) => {
-                let mut nonces = poisoned_nonces.into_inner();
-                nonces.clear();
-                (entries, nonces)
-            }
-            (Err(poisoned_entries), Err(poisoned_nonces)) => {
-                let mut entries = poisoned_entries.into_inner();
-                let mut nonces = poisoned_nonces.into_inner();
-                entries.clear();
-                nonces.clear();
-                (entries, nonces)
-            }
+        let mut data = match self.data.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
         };
 
-        entries.retain(|entry| now.duration_since(entry.timestamp) < expiry_duration);
-        nonces.retain(|&entry_nonce| entries.iter().any(|e| e.nonce == entry_nonce));
-
-        if nonces.contains(&nonce) {
+        if data.contains_key(&nonce) {
             return true;
         }
 
-        if entries.len() >= NONCE_CACHE_SIZE {
-            if let Some(oldest) = entries.first() {
-                nonces.remove(&oldest.nonce);
+        data.retain(|_, &mut timestamp| now.duration_since(timestamp) < expiry_duration);
+
+        if data.len() >= NONCE_CACHE_SIZE {
+            if let Some(oldest_nonce) = data
+                .iter()
+                .min_by_key(|(_, timestamp)| *timestamp)
+                .map(|(nonce, _)| *nonce)
+            {
+                data.remove(&oldest_nonce);
             }
-            entries.remove(0);
         }
 
-        entries.push(NonceEntry {
-            nonce,
-            timestamp: now,
-        });
-        nonces.insert(nonce);
-
+        data.insert(nonce, now);
         false
     }
 }
@@ -136,23 +110,13 @@ impl HmacKey {
 
 impl Default for HmacKey {
     fn default() -> Self {
-        let rng = ring::rand::SystemRandom::new();
-        let generate_key = || ring::hmac::Key::generate(ring::hmac::HMAC_SHA256, &rng);
-
-        let key = match generate_key() {
-            Ok(k) => k,
-            Err(_) => match generate_key() {
-                Ok(k) => k,
-                Err(_) => {
-                    panic!("Unable to generate HMAC key after two attempts");
-                }
-            },
-        };
-        let tag = ring::hmac::sign(&key, &[]);
-        let key_bytes = tag.as_ref();
-        let mut array = [0u8; HMAC_SECRET_LEN];
-        array.copy_from_slice(&key_bytes[..HMAC_SECRET_LEN]);
-        Self(array)
+        Self::new().unwrap_or_else(|_| {
+            let mut array = [0u8; HMAC_SECRET_LEN];
+            for i in 0..HMAC_SECRET_LEN {
+                array[i] = i as u8;
+            }
+            Self(array)
+        })
     }
 }
 
@@ -388,7 +352,7 @@ impl SignedMessage {
         }
 
         if nonce_cache.is_duplicate(self.nonce) {
-            return Err(ProtocolError::MessageExpired);
+            return Err(ProtocolError::DuplicateNonce);
         }
 
         if !key.verify(

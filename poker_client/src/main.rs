@@ -1027,17 +1027,13 @@ fn update_ui(
                     );
                 }
                 ui.add_space(10.0);
-                let mut pending_chat_text = String::new();
-                let pending_chat_guard = match app_state.game_state.pending_chat.try_lock() {
-                    Ok(guard) => {
-                        pending_chat_text = guard.clone();
-                        guard
-                    }
-                    Err(_) => {
+                let mut pending_chat_text =
+                    if let Ok(guard) = app_state.game_state.pending_chat.try_lock() {
+                        guard.clone()
+                    } else {
                         ui.label("System busy, try again");
                         return;
-                    }
-                };
+                    };
                 let chat_input = egui::TextEdit::singleline(&mut pending_chat_text)
                     .desired_width(180.0)
                     .hint_text("Type a message...");

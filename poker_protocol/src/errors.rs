@@ -26,6 +26,9 @@ pub enum ProtocolError {
     #[error("Message expired")]
     MessageExpired,
 
+    #[error("Duplicate nonce")]
+    DuplicateNonce,
+
     #[error("Failed to generate HMAC key")]
     HmacKeyGeneration,
 }
