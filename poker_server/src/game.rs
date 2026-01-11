@@ -765,7 +765,7 @@ impl PokerGame {
         let min_bet = players_vec.first().map(|p| p.current_bet).unwrap_or(0);
 
         let main_pot_players: Vec<String> = players_vec.iter().map(|p| p.id.clone()).collect();
-        let main_pot_amount = min_bet * main_pot_players.len() as i32;
+        let main_pot_amount = min_bet.saturating_mul(main_pot_players.len() as i32);
         pots.push((main_pot_amount, main_pot_players));
 
         let mut current_level = min_bet;
@@ -779,7 +779,7 @@ impl PokerGame {
                     .map(|p| p.id.clone())
                     .collect();
 
-                let side_pot_amount = excess * eligible_players.len() as i32;
+                let side_pot_amount = excess.saturating_mul(eligible_players.len() as i32);
                 pots.push((side_pot_amount, eligible_players));
             }
             current_level = player.current_bet;

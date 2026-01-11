@@ -136,7 +136,7 @@ mod tests {
                 assert_eq!(update.pot, 100);
                 assert_eq!(update.community_cards.len(), 2);
             }
-            _ => assert!(false, "Expected GameState message"),
+            _ => panic!("Expected GameState message"),
         }
     }
 
@@ -151,7 +151,7 @@ mod tests {
                 assert_eq!(update.player_id, "p1");
                 assert_eq!(update.min_raise, 20);
             }
-            _ => assert!(false, "Expected ActionRequired message"),
+            _ => panic!("Expected ActionRequired message"),
         }
     }
 
@@ -167,7 +167,7 @@ mod tests {
                 assert_eq!(update.player_name, "Alice");
                 assert_eq!(update.chips, 1000);
             }
-            _ => assert!(false, "Expected PlayerConnected message"),
+            _ => panic!("Expected PlayerConnected message"),
         }
     }
 
@@ -181,7 +181,7 @@ mod tests {
             NetworkMessage::Chat(chat) => {
                 assert_eq!(chat.text, "Hello!");
             }
-            _ => assert!(false, "Expected Chat message"),
+            _ => panic!("Expected Chat message"),
         }
     }
 
@@ -195,7 +195,7 @@ mod tests {
             NetworkMessage::Error(err) => {
                 assert_eq!(err, "Something went wrong");
             }
-            _ => assert!(false, "Expected Error message"),
+            _ => panic!("Expected Error message"),
         }
     }
 
@@ -209,7 +209,7 @@ mod tests {
             NetworkMessage::Error(err) => {
                 assert!(err.contains("Unknown message type"));
             }
-            _ => assert!(false, "Expected Error message for unknown type"),
+            _ => panic!("Expected Error message for unknown type"),
         }
     }
 
@@ -232,7 +232,7 @@ mod tests {
             NetworkMessage::PlayerIdConfirmed(id) => {
                 assert_eq!(id, "test-player-123");
             }
-            _ => assert!(false, "Expected PlayerIdConfirmed message"),
+            _ => panic!("Expected PlayerIdConfirmed message"),
         }
     }
 
@@ -247,7 +247,7 @@ mod tests {
                 assert_eq!(update.winners, vec!["p1"]);
                 assert_eq!(update.community_cards.len(), 5);
             }
-            _ => assert!(false, "Expected Showdown message"),
+            _ => panic!("Expected Showdown message"),
         }
     }
 
@@ -261,7 +261,7 @@ mod tests {
             NetworkMessage::Ping(timestamp) => {
                 assert_eq!(timestamp, 1234567890);
             }
-            _ => assert!(false, "Expected Ping message"),
+            _ => panic!("Expected Ping message"),
         }
     }
 
@@ -273,7 +273,7 @@ mod tests {
         let msg = result.unwrap();
         match msg {
             NetworkMessage::Pong(()) => {}
-            _ => assert!(false, "Expected Pong message"),
+            _ => panic!("Expected Pong message"),
         }
     }
 }
