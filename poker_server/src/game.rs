@@ -13,9 +13,6 @@ use crate::MAX_BET_MULTIPLIER;
 
 const MAX_POT: i32 = i32::MAX / 2;
 
-const MAX_BROADCAST_RETRIES: u32 = 3;
-const BROADCAST_RETRY_DELAY_MS: u64 = 10;
-
 #[derive(Debug)]
 pub struct PokerGame {
     pub game_id: String,
@@ -39,24 +36,8 @@ pub struct PokerGame {
 impl PokerGame {
     /// Safely broadcasts a message with retry logic
     fn broadcast_message(&self, message: ServerMessage) {
-        let mut retries = 0;
-        loop {
-            match self.tx.send(message.clone()) {
-                Ok(_) => break,
-                Err(e) => {
-                    if retries >= MAX_BROADCAST_RETRIES {
-                        error!(
-                            "Failed to broadcast message after {} retries: {}",
-                            MAX_BROADCAST_RETRIES, e
-                        );
-                        break;
-                    }
-                    retries += 1;
-                    std::thread::sleep(std::time::Duration::from_millis(
-                        BROADCAST_RETRY_DELAY_MS * retries as u64,
-                    ));
-                }
-            }
+        if let Err(e) = self.tx.send(message) {
+            error!("Failed to broadcast message: {}", e);
         }
     }
 
@@ -517,17 +498,26 @@ impl PokerGame {
                 }
             }
             PlayerAction::Call => {
-                let player = self
+                let player_chips = self
                     .players
-                    .get_mut(player_id)
-                    .ok_or_else(|| ServerError::PlayerNotFound(player_id.to_string()))?;
-                let player_chips = player.chips;
+                    .get(player_id)
+                    .ok_or_else(|| ServerError::PlayerNotFound(player_id.to_string()))?
+                    .chips;
                 let call_amount = current_bet
-                    .saturating_sub(player.current_bet)
+                    .saturating_sub(
+                        self.players
+                            .get(player_id)
+                            .map(|p| p.current_bet)
+                            .unwrap_or(0),
+                    )
                     .min(player_chips);
-                let new_pot = self.calculate_new_pot(call_amount).ok_or_else(|| {
-                    ServerError::InvalidBet("Pot size exceeds maximum allowed".to_string())
-                })?;
+
+                if call_amount > 0 {
+                    let new_pot = self.calculate_new_pot(call_amount).ok_or_else(|| {
+                        ServerError::InvalidBet("Pot size exceeds maximum allowed".to_string())
+                    })?;
+                    self.pot = new_pot;
+                }
 
                 let player = self
                     .players
@@ -535,7 +525,6 @@ impl PokerGame {
                     .ok_or_else(|| ServerError::PlayerNotFound(player_id.to_string()))?;
                 player.chips -= call_amount;
                 player.current_bet += call_amount;
-                self.pot = new_pot;
                 player.has_acted = true;
 
                 if player.chips == 0 {
@@ -758,37 +747,36 @@ impl PokerGame {
 
     fn calculate_side_pots(&self) -> Vec<(i32, Vec<String>)> {
         let mut pots = Vec::new();
-        let mut players: Vec<_> = self.players.values().filter(|p| !p.is_folded).collect();
+        let players: Vec<_> = self.players.values().filter(|p| !p.is_folded).collect();
 
         if players.is_empty() {
             return pots;
         }
 
-        players.sort_by_key(|p| p.current_bet);
+        let mut players_vec: Vec<_> = players.iter().collect();
+        players_vec.sort_by_key(|p| p.current_bet);
 
-        let mut total_so_far = 0;
+        let min_bet = players_vec.first().map(|p| p.current_bet).unwrap_or(0);
 
-        for i in 0..players.len() {
-            let current_bet = players[i].current_bet;
-            if current_bet <= total_so_far {
-                continue;
+        let main_pot_players: Vec<String> = players_vec.iter().map(|p| p.id.clone()).collect();
+        let main_pot_amount = min_bet * main_pot_players.len() as i32;
+        pots.push((main_pot_amount, main_pot_players));
+
+        let mut current_level = min_bet;
+
+        for player in players_vec.iter() {
+            let excess = player.current_bet - current_level;
+            if excess > 0 {
+                let eligible_players: Vec<String> = players_vec
+                    .iter()
+                    .filter(|p| p.current_bet >= player.current_bet)
+                    .map(|p| p.id.clone())
+                    .collect();
+
+                let side_pot_amount = excess * eligible_players.len() as i32;
+                pots.push((side_pot_amount, eligible_players));
             }
-
-            let next_level = if i + 1 < players.len() {
-                players[i + 1].current_bet
-            } else {
-                current_bet
-            };
-
-            let level_amount = next_level - total_so_far;
-            let eligible_players: Vec<String> = players[i..].iter().map(|p| p.id.clone()).collect();
-
-            if level_amount > 0 && !eligible_players.is_empty() {
-                let pot_size = level_amount * eligible_players.len() as i32;
-                pots.push((pot_size, eligible_players));
-            }
-
-            total_so_far = next_level;
+            current_level = player.current_bet;
         }
 
         pots
@@ -1490,7 +1478,7 @@ mod tests {
         assert!(result.is_some());
         let eval = result.unwrap();
         assert_eq!(eval.rank, HandRank::Straight);
-        assert_eq!(eval.primary_rank, 6);
+        assert_eq!(eval.primary_rank, 5);
         assert!(eval.description.contains("Wheel"));
     }
 

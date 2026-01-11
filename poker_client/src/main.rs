@@ -1033,18 +1033,18 @@ fn update_ui(
                 let chat_input = egui::TextEdit::singleline(&mut pending_chat_text)
                     .desired_width(180.0)
                     .hint_text("Type a message...");
-                if ui.add(chat_input).lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter))
+                if ui.add(chat_input).lost_focus()
+                    && ui.input(|i| i.key_pressed(egui::Key::Enter))
+                    && !pending_chat_text.is_empty()
                 {
-                    if !pending_chat_text.is_empty() {
-                        if let Ok(msg) = serde_json::to_string(&serde_json::json!({
-                            "type": "chat",
-                            "text": pending_chat_text
-                        })) {
-                            let _ = network_res.ui_tx.send(msg);
-                            info!("Sent chat message");
-                            if let Ok(mut guard) = app_state.game_state.pending_chat.try_lock() {
-                                guard.clear();
-                            }
+                    if let Ok(msg) = serde_json::to_string(&serde_json::json!({
+                        "type": "chat",
+                        "text": pending_chat_text
+                    })) {
+                        let _ = network_res.ui_tx.send(msg);
+                        info!("Sent chat message");
+                        if let Ok(mut guard) = app_state.game_state.pending_chat.try_lock() {
+                            guard.clear();
                         }
                     }
                 }

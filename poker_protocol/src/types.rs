@@ -341,7 +341,7 @@ impl HandEvaluation {
     }
 
     pub fn straight(straight_high: u8) -> Self {
-        let is_wheel = straight_high == 6;
+        let is_wheel = straight_high == 5;
         let description = if is_wheel {
             "5-4-3-2-A (Wheel)".to_string()
         } else {
@@ -350,7 +350,7 @@ impl HandEvaluation {
                 .unwrap_or_else(|| "Unknown".to_string())
         };
 
-        let primary_rank = if is_wheel { 1 } else { straight_high as i32 };
+        let primary_rank = if is_wheel { 5 } else { straight_high as i32 };
 
         Self {
             rank: HandRank::Straight,
@@ -363,8 +363,8 @@ impl HandEvaluation {
     pub fn straight_with_wheel() -> Self {
         Self {
             rank: HandRank::Straight,
-            primary_rank: 1,
-            tiebreakers: vec![1, 5, 4, 3, 2],
+            primary_rank: 5,
+            tiebreakers: vec![5, 4, 3, 2, 1],
             description: "Straight, 5-4-3-2-A (Wheel)".to_string(),
         }
     }

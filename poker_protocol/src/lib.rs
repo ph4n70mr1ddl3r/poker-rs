@@ -110,13 +110,7 @@ impl HmacKey {
 
 impl Default for HmacKey {
     fn default() -> Self {
-        Self::new().unwrap_or_else(|_| {
-            let mut array = [0u8; HMAC_SECRET_LEN];
-            for i in 0..HMAC_SECRET_LEN {
-                array[i] = i as u8;
-            }
-            Self(array)
-        })
+        Self::new().expect("Failed to generate HMAC key - this is a fatal error")
     }
 }
 
