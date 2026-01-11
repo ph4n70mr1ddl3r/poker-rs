@@ -456,7 +456,7 @@ pub struct ChatMessage {
     pub player_id: String,
     pub player_name: String,
     pub text: String,
-    pub timestamp: i64,
+    pub timestamp: u64,
 }
 
 impl ServerMessage {

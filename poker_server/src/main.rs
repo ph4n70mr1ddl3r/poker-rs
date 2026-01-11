@@ -881,7 +881,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_integration_protocol_serialization() {
-        let action_msg = r#"{"Action":"Fold"}"#;
+        let _action_msg = r#"{"Action":"Fold"}"#;
         let parsed = poker_protocol::PlayerAction::parse_action("Fold");
         assert!(parsed.is_some());
 

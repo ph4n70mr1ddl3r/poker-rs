@@ -1647,7 +1647,7 @@ mod tests {
         }
 
         let pots_after_fold = game.calculate_side_pots();
-        assert!(pots_after_fold.len() >= 1);
+        assert!(!pots_after_fold.is_empty());
     }
 
     #[test]
