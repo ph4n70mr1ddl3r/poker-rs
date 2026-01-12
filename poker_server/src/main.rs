@@ -271,7 +271,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let hmac_key = if config.enable_hmac_verification {
         Arc::new(HmacKey::new().unwrap_or_else(|_| HmacKey::default()))
     } else {
-        Arc::new(HmacKey::from_bytes(&vec![0u8; HMAC_SECRET_LEN]).unwrap())
+        Arc::new(HmacKey::from_bytes(&[0u8; HMAC_SECRET_LEN]).unwrap())
     };
     let nonce_cache = Arc::new(NonceCache::new());
 

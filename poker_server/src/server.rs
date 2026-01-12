@@ -503,6 +503,8 @@ impl PokerServer {
         Ok(())
     }
 
+    /// Verifies a player's session token.
+    /// Used during reconnection to validate the player owns the session.
     #[allow(dead_code)]
     pub fn verify_session(&self, player_id: &str, token: &str) -> bool {
         self.players
