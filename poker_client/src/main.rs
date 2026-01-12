@@ -23,6 +23,13 @@ mod network;
 
 use game::PokerGameState;
 
+fn mutex_poison_error(context: &str) -> String {
+    format!(
+        "Mutex poisoned during {} - connection state corrupted. Please restart the application.",
+        context
+    )
+}
+
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
 enum ClientNetworkMessage {
@@ -161,7 +168,9 @@ async fn connect_with_retry(
 > {
     loop {
         let delay = {
-            let mut state = reconnect_state.lock().map_err(|_| "Mutex poisoned")?;
+            let mut state = reconnect_state
+                .lock()
+                .map_err(|_| mutex_poison_error("reconnection state access"))?;
             match state.next_attempt() {
                 Some(d) => d,
                 None => {
@@ -176,7 +185,7 @@ async fn connect_with_retry(
         let attempt = {
             reconnect_state
                 .lock()
-                .map_err(|_| "Mutex poisoned")?
+                .map_err(|_| mutex_poison_error("attempt number retrieval"))?
                 .attempt
         };
 
@@ -195,7 +204,9 @@ async fn connect_with_retry(
             Ok(Ok((ws_stream, _))) => {
                 info!("WebSocket handshake successful!");
                 {
-                    let mut state = reconnect_state.lock().map_err(|_| "Mutex poisoned")?;
+                    let mut state = reconnect_state
+                        .lock()
+                        .map_err(|_| mutex_poison_error("state reset"))?;
                     state.reset();
                 }
                 return Ok((ws_stream, server_addr.to_string()));
@@ -205,8 +216,9 @@ async fn connect_with_retry(
                 let attempt = match reconnect_state.lock() {
                     Ok(guard) => guard.attempt,
                     Err(_) => {
-                        let _ = tx_for_network
-                            .send(ClientNetworkMessage::Error("Mutex poisoned".to_string()));
+                        let _ = tx_for_network.send(ClientNetworkMessage::Error(
+                            mutex_poison_error("error reporting"),
+                        ));
                         continue;
                     }
                 };
@@ -220,8 +232,9 @@ async fn connect_with_retry(
                 let attempt = match reconnect_state.lock() {
                     Ok(guard) => guard.attempt,
                     Err(_) => {
-                        let _ = tx_for_network
-                            .send(ClientNetworkMessage::Error("Mutex poisoned".to_string()));
+                        let _ = tx_for_network.send(ClientNetworkMessage::Error(
+                            mutex_poison_error("timeout error reporting"),
+                        ));
                         continue;
                     }
                 };
@@ -273,9 +286,9 @@ fn setup_network(mut commands: Commands, server_config: Res<ServerConfig>) {
             let mut state = match connection_state_clone.lock() {
                 Ok(guard) => guard,
                 Err(_) => {
-                    let _ = tx.send(ClientNetworkMessage::Error(
-                        "Mutex poisoned during connection".to_string(),
-                    ));
+                    let _ = tx.send(ClientNetworkMessage::Error(mutex_poison_error(
+                        "initial connection state setup",
+                    )));
                     return;
                 }
             };
@@ -304,9 +317,9 @@ fn setup_network(mut commands: Commands, server_config: Res<ServerConfig>) {
             let mut state = match connection_state_clone.lock() {
                 Ok(guard) => guard,
                 Err(_) => {
-                    let _ = tx.send(ClientNetworkMessage::Error(
-                        "Mutex poisoned after connection".to_string(),
-                    ));
+                    let _ = tx.send(ClientNetworkMessage::Error(mutex_poison_error(
+                        "post-connection state update",
+                    )));
                     return;
                 }
             };
@@ -451,10 +464,9 @@ fn handle_network_messages(
     let rx = match network_res.rx.lock() {
         Ok(guard) => guard,
         Err(_) => {
-            error!("Mutex poisoned - network channel lost. Please restart the application.");
-            app_state
-                .game_state
-                .add_error("Network channel error - connection lost. Please restart.".to_string());
+            let error_msg = mutex_poison_error("network channel access");
+            error!("{}", error_msg);
+            app_state.game_state.add_error(error_msg);
             app_state.connected = false;
             return;
         }
