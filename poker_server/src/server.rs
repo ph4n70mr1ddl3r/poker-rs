@@ -217,16 +217,17 @@ impl PokerServer {
             }
 
             let timeout_duration = Duration::from_millis(BROADCAST_SEND_TIMEOUT_MS);
+            let msg_arc = Arc::new(message.to_string());
             let semaphore = Arc::clone(&self.broadcast_semaphore);
 
             for (player_id, sender) in players {
-                let msg = message.to_string();
+                let msg = Arc::clone(&msg_arc);
                 let sender = sender.clone();
                 let player_id = player_id.clone();
                 let sem = Arc::clone(&semaphore);
                 tokio::spawn(async move {
                     let _permit = sem.acquire().await;
-                    if let Err(e) = timeout(timeout_duration, sender.send(msg)).await {
+                    if let Err(e) = timeout(timeout_duration, sender.send((*msg).clone())).await {
                         error!("Timeout sending to player {}: {}", player_id, e);
                     }
                 });
@@ -455,17 +456,17 @@ impl PokerServer {
             }
 
             let timeout_duration = Duration::from_millis(BROADCAST_SEND_TIMEOUT_MS);
-            let msg_for_send = json;
+            let msg_arc = Arc::new(json);
             let semaphore = Arc::clone(&self.broadcast_semaphore);
 
             for (player_id, sender) in players {
-                let msg = msg_for_send.clone();
+                let msg = Arc::clone(&msg_arc);
                 let sender = sender.clone();
                 let player_id = player_id.clone();
                 let sem = Arc::clone(&semaphore);
                 tokio::spawn(async move {
                     let _permit = sem.acquire().await;
-                    if let Err(e) = timeout(timeout_duration, sender.send(msg)).await {
+                    if let Err(e) = timeout(timeout_duration, sender.send((*msg).clone())).await {
                         error!("Timeout sending to player {}: {}", player_id, e);
                     }
                 });

@@ -529,8 +529,8 @@ impl PokerGame {
                     .players
                     .get_mut(player_id)
                     .ok_or_else(|| ServerError::PlayerNotFound(player_id.to_string()))?;
-                player.chips -= call_amount;
-                player.current_bet += call_amount;
+                player.chips = player.chips.saturating_sub(call_amount);
+                player.current_bet = player.current_bet.saturating_add(call_amount);
                 player.has_acted = true;
 
                 if player.chips == 0 {
@@ -559,7 +559,7 @@ impl PokerGame {
                     .players
                     .get_mut(player_id)
                     .ok_or_else(|| ServerError::PlayerNotFound(player_id.to_string()))?;
-                player.chips -= bet_amount;
+                player.chips = player.chips.saturating_sub(bet_amount);
                 player.current_bet = bet_amount;
                 self.pot = new_pot;
                 self.min_raise = bet_amount.saturating_mul(2);
@@ -595,7 +595,7 @@ impl PokerGame {
                     .players
                     .get_mut(player_id)
                     .ok_or_else(|| ServerError::PlayerNotFound(player_id.to_string()))?;
-                player.chips -= actual_raise;
+                player.chips = player.chips.saturating_sub(actual_raise);
                 player.current_bet = player.current_bet.saturating_add(actual_raise);
                 self.pot = new_pot;
                 self.min_raise = player.current_bet.saturating_mul(2);

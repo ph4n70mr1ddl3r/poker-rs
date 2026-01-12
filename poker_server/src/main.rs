@@ -7,7 +7,8 @@ use futures::stream::StreamExt;
 use futures::SinkExt;
 use log::{debug, error, info, warn};
 use parking_lot::Mutex;
-use poker_protocol::{ClientMessage, ServerMessage};
+use poker_protocol::{ClientMessage, HmacKey, NonceCache, ServerMessage};
+use rand::prelude::SliceRandom;
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -20,6 +21,8 @@ use tokio_tungstenite::tungstenite::Message;
 use uuid::Uuid;
 
 pub const SHUTDOWN_TIMEOUT_SECS: u64 = 5;
+
+const HMAC_SECRET_LEN: usize = 32;
 
 pub struct TokenBucketRateLimiter {
     tokens: std::sync::atomic::AtomicU64,
@@ -43,15 +46,16 @@ impl TokenBucketRateLimiter {
     }
 
     pub async fn allow(&self) -> bool {
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
+
         loop {
-            let now_ms = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_millis() as u64;
-            let tokens = self.tokens.load(std::sync::atomic::Ordering::Relaxed);
+            let tokens = self.tokens.load(std::sync::atomic::Ordering::Acquire);
             let last_update_ms = self
                 .last_update_ms
-                .load(std::sync::atomic::Ordering::Relaxed);
+                .load(std::sync::atomic::Ordering::Acquire);
 
             let elapsed_ms = now_ms.saturating_sub(last_update_ms);
             let refill = elapsed_ms
@@ -69,6 +73,7 @@ impl TokenBucketRateLimiter {
             }
 
             let new_tokens = available_tokens.saturating_sub(1);
+            let new_last_update_ms = if refill > 0 { now_ms } else { last_update_ms };
 
             if self
                 .tokens
@@ -82,7 +87,7 @@ impl TokenBucketRateLimiter {
             {
                 if refill > 0 {
                     self.last_update_ms
-                        .store(now_ms, std::sync::atomic::Ordering::Relaxed);
+                        .store(new_last_update_ms, std::sync::atomic::Ordering::Release);
                 }
                 return true;
             }
@@ -97,7 +102,10 @@ struct RateLimiter {
 impl RateLimiter {
     fn new() -> Self {
         Self {
-            inner: TokenBucketRateLimiter::new(100, 10),
+            inner: TokenBucketRateLimiter::new(
+                100, // max_tokens: Allow up to 100 actions
+                10,  // refill_rate: Refill 10 tokens per second
+            ),
         }
     }
 
@@ -119,7 +127,10 @@ struct ChatRateLimiter {
 impl ChatRateLimiter {
     fn new() -> Self {
         Self {
-            inner: TokenBucketRateLimiter::new(5, 1),
+            inner: TokenBucketRateLimiter::new(
+                5, // max_tokens: Allow up to 5 chat messages
+                1, // refill_rate: Refill 1 token per second (1 message/sec)
+            ),
         }
     }
 
@@ -141,15 +152,25 @@ fn validate_action_amount(amount: i64, max_allowed: i32) -> Result<i32, String> 
     Ok(amount as i32)
 }
 
+/// Maximum multiplier for bet relative to pot size (prevents oversized bets)
 pub const MAX_BET_MULTIPLIER: i32 = 10;
+/// Maximum allowed WebSocket message size in bytes (4KB)
 const MAX_MESSAGE_SIZE: usize = 4096;
+/// Maximum chips a player can have at any time
 const MAX_PLAYER_CHIPS: i32 = 1000000;
+/// Starting chips for new players
 const STARTING_CHIPS: i32 = 1000;
+/// Capacity for tokio mpsc channels used for message passing
 const CHANNEL_CAPACITY: usize = 100;
+/// Timeout for player inactivity in milliseconds (10 minutes)
 const INACTIVITY_TIMEOUT_MS: u64 = 600000;
+/// Maximum total concurrent connections to the server
 const MAX_CONNECTIONS: usize = 100;
+/// Maximum concurrent connections from a single IP address
 const MAX_CONNECTIONS_PER_IP: usize = 5;
+/// Session token expiry time in hours
 const SESSION_TOKEN_EXPIRY_HOURS: u64 = 24;
+/// Maximum bet allowed per hand
 pub const MAX_BET_PER_HAND: i32 = 100000;
 
 #[derive(Clone)]
@@ -164,6 +185,7 @@ pub struct ServerConfig {
     pub max_connections_per_ip: usize,
     pub session_token_expiry_hours: u64,
     pub max_bet_per_hand: i32,
+    pub enable_hmac_verification: bool,
 }
 
 impl Default for ServerConfig {
@@ -179,6 +201,7 @@ impl Default for ServerConfig {
             max_connections_per_ip: MAX_CONNECTIONS_PER_IP,
             session_token_expiry_hours: SESSION_TOKEN_EXPIRY_HOURS,
             max_bet_per_hand: MAX_BET_PER_HAND,
+            enable_hmac_verification: true,
         }
     }
 }
@@ -244,6 +267,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let config = ServerConfig::default();
     let server = Arc::new(Mutex::new(PokerServer::new()));
     let shutdown_state = ShutdownState::new();
+
+    let hmac_key = if config.enable_hmac_verification {
+        Arc::new(HmacKey::new().unwrap_or_else(|_| HmacKey::default()))
+    } else {
+        Arc::new(HmacKey::from_bytes(&vec![0u8; HMAC_SECRET_LEN]).unwrap())
+    };
+    let nonce_cache = Arc::new(NonceCache::new());
 
     let addr = "127.0.0.1:8080";
     let listener = TcpListener::bind(addr).await?;
@@ -317,14 +347,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let server = Arc::clone(&server);
         let player_id = Uuid::new_v4().to_string();
         let shutdown_flag = shutdown_state.should_shutdown.clone();
+        let hmac_key = hmac_key.clone();
+        let nonce_cache = nonce_cache.clone();
 
         let handle = tokio::spawn(async move {
             if shutdown_flag.load(Ordering::Relaxed) {
                 return;
             }
 
-            if let Err(e) =
-                handle_connection(stream, addr, Arc::clone(&server), player_id.clone()).await
+            if let Err(e) = handle_connection(
+                stream,
+                addr,
+                Arc::clone(&server),
+                player_id.clone(),
+                hmac_key,
+                nonce_cache,
+            )
+            .await
             {
                 error!("Error handling connection: {}", e);
             }
@@ -363,6 +402,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+fn generate_player_name(player_id: &str) -> String {
+    const PLAYER_NAME_PREFIXES: &[&str] = &[
+        "Rabbit", "Fox", "Bear", "Wolf", "Eagle", "Lion", "Tiger", "Hawk", "Shark", "Snake",
+        "Panther", "Cobra", "Viper", "Jaguar", "Falcon", "Lynx",
+    ];
+    const PLAYER_NAME_SUFFIXES: &[&str] = &[
+        "Ace", "King", "Queen", "Jack", "Ten", "Nine", "Eight", "Seven", "Six", "Five", "Four",
+        "Three", "Two", "Bird", "Runner", "Hunter",
+    ];
+
+    let mut rng = rand::thread_rng();
+    let prefix = PLAYER_NAME_PREFIXES.choose(&mut rng).unwrap_or(&"Player");
+    let suffix = PLAYER_NAME_SUFFIXES.choose(&mut rng).unwrap_or(&"");
+
+    format!("{}{}{}", prefix, suffix, &player_id[0..4].to_uppercase())
+}
+
+#[allow(dead_code)]
 fn sanitize_player_name(name: &str) -> String {
     let max_len = 20;
     let min_len = 1;
@@ -554,6 +611,8 @@ async fn handle_connection(
     addr: SocketAddr,
     server: Arc<Mutex<PokerServer>>,
     player_id: String,
+    hmac_key: Arc<HmacKey>,
+    nonce_cache: Arc<NonceCache>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let ip = addr.ip().to_string();
 
@@ -593,8 +652,8 @@ async fn handle_connection(
 
     {
         let mut s = server.lock();
-        let sanitized_name = sanitize_player_name(&format!("Player{}", &player_id[..8]));
-        s.register_player(player_id.clone(), sanitized_name, STARTING_CHIPS);
+        let player_name = generate_player_name(&player_id);
+        s.register_player(player_id.clone(), player_name, STARTING_CHIPS);
         s.connect_player(&player_id, tx);
     }
 
@@ -605,6 +664,8 @@ async fn handle_connection(
     let rate_limiter_clone = Arc::clone(&rate_limiter);
     let chat_rate_limiter_clone = Arc::clone(&chat_rate_limiter);
     let rate_limiter_for_handler = Arc::clone(&rate_limiter_clone);
+    let hmac_key_clone = hmac_key.clone();
+    let nonce_cache_clone = nonce_cache.clone();
     let handler = MessageHandler::new(
         server,
         player_id.clone(),
@@ -617,6 +678,7 @@ async fn handle_connection(
         let mut last_activity = Instant::now();
         let server_for_read = server_for_read;
         let player_id = player_id_clone;
+        let config = ServerConfig::default();
 
         while let Some(result) = stream.next().await {
             if last_activity.elapsed() > Duration::from_millis(INACTIVITY_TIMEOUT_MS) {
@@ -653,7 +715,44 @@ async fn handle_connection(
                     }
                     debug!("Received from {}: {}", player_id, text);
 
-                    if let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) {
+                    let use_hmac = config.enable_hmac_verification;
+                    if use_hmac {
+                        if let Ok(signed_msg) =
+                            serde_json::from_str::<poker_protocol::SignedMessage>(&text)
+                        {
+                            match signed_msg.verify(&hmac_key_clone, &nonce_cache_clone) {
+                                Ok(client_msg) => {
+                                    handler.handle_client_message(client_msg).await;
+                                }
+                                Err(e) => {
+                                    warn!(
+                                        "HMAC verification failed for player {}: {}",
+                                        player_id, e
+                                    );
+                                    let error_msg = ServerMessage::Error(
+                                        "Invalid message signature".to_string(),
+                                    );
+                                    if let Ok(json) = serde_json::to_string(&error_msg) {
+                                        let server = server_for_read.lock();
+                                        let _ = server.send_to_player(&player_id, json);
+                                    }
+                                    break;
+                                }
+                            }
+                        } else {
+                            warn!(
+                                "Player {} sent unsigned message when HMAC is required",
+                                player_id
+                            );
+                            let error_msg =
+                                ServerMessage::Error("Message signing is required".to_string());
+                            if let Ok(json) = serde_json::to_string(&error_msg) {
+                                let server = server_for_read.lock();
+                                let _ = server.send_to_player(&player_id, json);
+                            }
+                            break;
+                        }
+                    } else if let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) {
                         if let Some(type_obj) = value.get("type") {
                             if let Some(type_str) = type_obj.as_str() {
                                 match type_str {
