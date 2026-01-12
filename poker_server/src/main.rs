@@ -419,37 +419,6 @@ fn generate_player_name(player_id: &str) -> String {
     format!("{}{}{}", prefix, suffix, &player_id[0..4].to_uppercase())
 }
 
-#[allow(dead_code)]
-fn sanitize_player_name(name: &str) -> String {
-    let max_len = 20;
-    let min_len = 1;
-    let mut result = String::with_capacity(name.len().min(max_len * 2));
-    let mut has_valid_char = false;
-
-    for c in name.chars() {
-        if c.is_alphanumeric() || c == '_' || c == '-' {
-            result.push(c);
-            has_valid_char = true;
-        } else if result.is_empty() {
-            result.push('_');
-        }
-        if result.len() >= max_len {
-            break;
-        }
-    }
-
-    if !has_valid_char && result.chars().all(|c| c == '_') {
-        result.clear();
-    }
-
-    if result.len() < min_len {
-        result.push_str("Player");
-    }
-
-    result.truncate(max_len);
-    result
-}
-
 fn sanitize_chat_message(text: &str) -> String {
     let max_len = 500;
     let mut result = String::with_capacity(text.len().min(max_len));
@@ -866,28 +835,6 @@ mod tests {
     #[test]
     fn test_validate_action_amount_too_large() {
         assert!(validate_action_amount(i64::MAX, 1000).is_err());
-    }
-
-    #[test]
-    fn test_sanitize_player_name_alphanumeric() {
-        assert_eq!(sanitize_player_name("TestPlayer123"), "TestPlayer123");
-    }
-
-    #[test]
-    fn test_sanitize_player_name_special_chars() {
-        assert_eq!(sanitize_player_name("Test@Player#123"), "TestPlayer123");
-    }
-
-    #[test]
-    fn test_sanitize_player_name_empty() {
-        assert_eq!(sanitize_player_name("@#$%"), "Player");
-    }
-
-    #[test]
-    fn test_sanitize_player_name_too_long() {
-        let long_name = "A".repeat(50);
-        let result = sanitize_player_name(&long_name);
-        assert!(result.len() <= 20);
     }
 
     #[test]

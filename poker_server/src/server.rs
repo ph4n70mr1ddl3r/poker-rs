@@ -27,7 +27,6 @@ pub struct ServerPlayer {
     pub connected: bool,
     pub ws_sender: Option<Sender<String>>,
     pub seated: bool,
-    #[allow(dead_code)]
     pub session_token: String,
     pub session_created_at: DateTime<Utc>,
 }
