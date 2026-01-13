@@ -1,7 +1,8 @@
+use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fmt;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 mod errors;
@@ -32,10 +33,7 @@ impl NonceCache {
     pub fn is_duplicate(&self, nonce: u64) -> bool {
         let now = Instant::now();
         let expiry_duration = Duration::from_millis(NONCE_EXPIRY_MS);
-        let mut data = match self.data.lock() {
-            Ok(guard) => guard,
-            Err(poisoned) => poisoned.into_inner(),
-        };
+        let mut data = self.data.lock();
 
         if data.contains_key(&nonce) {
             return true;
@@ -110,7 +108,7 @@ impl HmacKey {
 
 impl Default for HmacKey {
     fn default() -> Self {
-        Self::new().expect("Failed to generate HMAC key - this is a fatal error")
+        Self::new().unwrap_or(Self([0u8; HMAC_SECRET_LEN]))
     }
 }
 
