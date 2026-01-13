@@ -19,17 +19,27 @@ const MESSAGE_TIMESTAMP_MAX_DIFF_MS: u64 = 30000;
 const NONCE_CACHE_SIZE: usize = 1000;
 const NONCE_EXPIRY_MS: u64 = 60000;
 
+/// Cache for tracking used nonces to prevent replay attacks.
+/// Uses a time-based expiry to clean up old entries.
 pub struct NonceCache {
     data: Arc<Mutex<HashMap<u64, Instant>>>,
 }
 
 impl NonceCache {
+    /// Creates a new empty nonce cache.
     pub fn new() -> Self {
         Self {
             data: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
+    /// Checks if a nonce has been used recently.
+    ///
+    /// # Arguments
+    /// * `nonce` - The nonce value to check
+    ///
+    /// # Returns
+    /// `true` if the nonce is a duplicate or was recently used, `false` otherwise
     pub fn is_duplicate(&self, nonce: u64) -> bool {
         let now = Instant::now();
         let expiry_duration = Duration::from_millis(NONCE_EXPIRY_MS);
@@ -66,6 +76,10 @@ impl Default for NonceCache {
 pub struct HmacKey([u8; HMAC_SECRET_LEN]);
 
 impl HmacKey {
+    /// Generates a new random HMAC-SHA256 key.
+    ///
+    /// # Returns
+    /// `Ok(Self)` on success, `Err(ProtocolError::HmacKeyGeneration)` on failure
     pub fn new() -> Result<Self, ProtocolError> {
         ring::hmac::Key::generate(ring::hmac::HMAC_SHA256, &ring::rand::SystemRandom::new())
             .map_err(|_| ProtocolError::HmacKeyGeneration)
@@ -82,6 +96,13 @@ impl HmacKey {
             })
     }
 
+    /// Creates an HMAC key from raw byte data.
+    ///
+    /// # Arguments
+    /// * `bytes` - Raw key bytes (must be at least 32 bytes)
+    ///
+    /// # Returns
+    /// `Some(Self)` if bytes are sufficient, `None` otherwise
     pub fn from_bytes(bytes: &[u8]) -> Option<Self> {
         if bytes.len() >= HMAC_SECRET_LEN {
             let mut array = [0u8; HMAC_SECRET_LEN];
@@ -92,11 +113,26 @@ impl HmacKey {
         }
     }
 
+    /// Signs a message using HMAC-SHA256.
+    ///
+    /// # Arguments
+    /// * `message` - The message to sign
+    ///
+    /// # Returns
+    /// The signature as a 32-byte vector
     pub fn sign(&self, message: &str) -> Vec<u8> {
         let key = ring::hmac::Key::new(ring::hmac::HMAC_SHA256, &self.0);
         ring::hmac::sign(&key, message.as_bytes()).as_ref().to_vec()
     }
 
+    /// Verifies an HMAC signature for a message.
+    ///
+    /// # Arguments
+    /// * `message` - The original message that was signed
+    /// * `signature` - The signature to verify (must be exactly 32 bytes)
+    ///
+    /// # Returns
+    /// `true` if the signature is valid, `false` otherwise
     pub fn verify(&self, message: &str, signature: &[u8]) -> bool {
         if signature.len() != 32 {
             return false;
@@ -212,6 +248,14 @@ pub enum PlayerAction {
 }
 
 impl PlayerAction {
+    /// Parses a player action from a JSON value.
+    ///
+    /// # Arguments
+    /// * `value` - The JSON value to parse
+    /// * `max_chips` - Optional maximum chip limit for bet/raise amounts
+    ///
+    /// # Returns
+    /// `Some(PlayerAction)` if valid, `None` otherwise
     pub fn from_value(value: &serde_json::Value, max_chips: Option<i32>) -> Option<Self> {
         if let Some(action_str) = value.as_str() {
             match action_str {
@@ -250,10 +294,25 @@ impl PlayerAction {
         }
     }
 
+    /// Parses a player action with a maximum chip limit.
+    ///
+    /// # Arguments
+    /// * `value` - The JSON value to parse
+    /// * `max_chips` - Maximum allowed chips for bet/raise
+    ///
+    /// # Returns
+    /// `Some(PlayerAction)` if valid, `None` otherwise
     pub fn from_value_with_max(value: &serde_json::Value, max_chips: i32) -> Option<Self> {
         Self::from_value(value, Some(max_chips))
     }
 
+    /// Parses a player action from a string.
+    ///
+    /// # Arguments
+    /// * `s` - The string to parse (supports quoted and unquoted)
+    ///
+    /// # Returns
+    /// `Some(PlayerAction)` if valid, `None` otherwise
     pub fn parse_action(s: &str) -> Option<Self> {
         if let Some(action_str) = s.strip_prefix('\"').and_then(|s| s.strip_suffix('\"')) {
             match action_str {
@@ -288,15 +347,21 @@ impl fmt::Display for PlayerAction {
     }
 }
 
+/// A signed message with HMAC authentication, timestamp, and nonce for replay protection.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SignedMessage {
+    /// The JSON-serialized message content
     pub message: String,
+    /// The HMAC signature (32 bytes)
     pub signature: Vec<u8>,
+    /// Message creation timestamp in milliseconds since UNIX_EPOCH
     pub timestamp: u64,
+    /// Unique nonce for this message
     pub nonce: u64,
 }
 
 impl SignedMessage {
+    /// Creates a new signed message.
     pub fn new(message: String, signature: Vec<u8>, timestamp: u64, nonce: u64) -> Self {
         Self {
             message,
@@ -306,6 +371,15 @@ impl SignedMessage {
         }
     }
 
+    /// Creates and signs a new message.
+    ///
+    /// # Arguments
+    /// * `message` - The client message to sign
+    /// * `key` - The HMAC key to use for signing
+    /// * `nonce` - A unique nonce for this message
+    ///
+    /// # Returns
+    /// `Ok(Self)` on success, `Err(ProtocolError)` on serialization failure
     pub fn create(
         message: &ClientMessage,
         key: &HmacKey,
@@ -329,6 +403,14 @@ impl SignedMessage {
         })
     }
 
+    /// Verifies a signed message's authenticity and freshness.
+    ///
+    /// # Arguments
+    /// * `key` - The HMAC key to verify the signature
+    /// * `nonce_cache` - Cache to check for duplicate/nonce reuse
+    ///
+    /// # Returns
+    /// `Ok(ClientMessage)` on success, `Err(ProtocolError)` on failure
     pub fn verify(
         &self,
         key: &HmacKey,
@@ -458,6 +540,10 @@ pub struct ChatMessage {
 }
 
 impl ServerMessage {
+    /// Converts the message to a unified JSON format with a "type" field.
+    ///
+    /// # Returns
+    /// `Ok(JSON string)` on success, `Err(ProtocolError::JsonSerialize)` on failure
     pub fn to_unified_json(&self) -> Result<String, ProtocolError> {
         let value = match self {
             ServerMessage::Connected(player_id) => {
