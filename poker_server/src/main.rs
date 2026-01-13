@@ -206,6 +206,57 @@ impl Default for ServerConfig {
     }
 }
 
+impl ServerConfig {
+    pub fn from_env() -> Self {
+        Self {
+            max_player_chips: std::env::var("POKER_MAX_PLAYER_CHIPS")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(MAX_PLAYER_CHIPS),
+            starting_chips: std::env::var("POKER_STARTING_CHIPS")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(STARTING_CHIPS),
+            small_blind: std::env::var("POKER_SMALL_BLIND")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(5),
+            big_blind: std::env::var("POKER_BIG_BLIND")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(10),
+            max_message_size: std::env::var("POKER_MAX_MESSAGE_SIZE")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(MAX_MESSAGE_SIZE),
+            inactivity_timeout_ms: std::env::var("POKER_INACTIVITY_TIMEOUT_MS")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(INACTIVITY_TIMEOUT_MS),
+            max_connections: std::env::var("POKER_MAX_CONNECTIONS")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(MAX_CONNECTIONS),
+            max_connections_per_ip: std::env::var("POKER_MAX_CONNECTIONS_PER_IP")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(MAX_CONNECTIONS_PER_IP),
+            session_token_expiry_hours: std::env::var("POKER_SESSION_TOKEN_EXPIRY_HOURS")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(SESSION_TOKEN_EXPIRY_HOURS),
+            max_bet_per_hand: std::env::var("POKER_MAX_BET_PER_HAND")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(MAX_BET_PER_HAND),
+            enable_hmac_verification: std::env::var("POKER_ENABLE_HMAC")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(true),
+        }
+    }
+}
+
 struct ShutdownState {
     should_shutdown: Arc<AtomicBool>,
 }

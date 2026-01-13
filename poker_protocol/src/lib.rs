@@ -144,7 +144,13 @@ impl HmacKey {
 
 impl Default for HmacKey {
     fn default() -> Self {
-        Self::new().unwrap_or(Self([0u8; HMAC_SECRET_LEN]))
+        match Self::new() {
+            Ok(key) => key,
+            Err(e) => {
+                log::error!("Failed to generate HMAC key, using zero key: {}", e);
+                Self([0u8; HMAC_SECRET_LEN])
+            }
+        }
     }
 }
 
