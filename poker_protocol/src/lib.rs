@@ -14,7 +14,7 @@ pub use types::{
 };
 pub type ServerResult<T> = std::result::Result<T, ServerError>;
 
-const HMAC_SECRET_LEN: usize = 32;
+pub const HMAC_SECRET_LEN: usize = 32;
 const MESSAGE_TIMESTAMP_MAX_DIFF_MS: u64 = 30000;
 const NONCE_CACHE_SIZE: usize = 1000;
 const NONCE_EXPIRY_MS: u64 = 60000;
@@ -52,12 +52,12 @@ impl NonceCache {
         data.retain(|_, &mut timestamp| now.duration_since(timestamp) < expiry_duration);
 
         if data.len() >= NONCE_CACHE_SIZE {
-            if let Some(oldest_nonce) = data
+            let oldest_nonce = data
                 .iter()
                 .min_by_key(|(_, timestamp)| *timestamp)
-                .map(|(nonce, _)| *nonce)
-            {
-                data.remove(&oldest_nonce);
+                .map(|(nonce, _)| *nonce);
+            if let Some(nonce) = oldest_nonce {
+                data.remove(&nonce);
             }
         }
 
@@ -354,7 +354,7 @@ impl fmt::Display for PlayerAction {
 }
 
 /// A signed message with HMAC authentication, timestamp, and nonce for replay protection.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SignedMessage {
     /// The JSON-serialized message content
     pub message: String,

@@ -504,18 +504,24 @@ impl PokerGame {
                 }
             }
             PlayerAction::Call => {
-                let player_chips = self
-                    .players
-                    .get(player_id)
-                    .ok_or_else(|| ServerError::PlayerNotFound(player_id.to_string()))?
-                    .chips;
+                let player_id = player_id.to_string();
+                let player_chips = {
+                    let player = self
+                        .players
+                        .get(&player_id)
+                        .ok_or_else(|| ServerError::PlayerNotFound(player_id.clone()))?;
+                    player.chips
+                };
+                let player_current_bet = {
+                    let player = self
+                        .players
+                        .get(&player_id)
+                        .ok_or_else(|| ServerError::PlayerNotFound(player_id.clone()))?;
+                    player.current_bet
+                };
+
                 let call_amount = current_bet
-                    .saturating_sub(
-                        self.players
-                            .get(player_id)
-                            .map(|p| p.current_bet)
-                            .unwrap_or(0),
-                    )
+                    .saturating_sub(player_current_bet)
                     .min(player_chips);
 
                 if call_amount > 0 {
@@ -527,8 +533,8 @@ impl PokerGame {
 
                 let player = self
                     .players
-                    .get_mut(player_id)
-                    .ok_or_else(|| ServerError::PlayerNotFound(player_id.to_string()))?;
+                    .get_mut(&player_id)
+                    .ok_or(ServerError::PlayerNotFound(player_id))?;
                 player.chips = player.chips.saturating_sub(call_amount);
                 player.current_bet = player.current_bet.saturating_add(call_amount);
                 player.has_acted = true;
@@ -570,20 +576,21 @@ impl PokerGame {
                 }
             }
             PlayerAction::Raise(amount) => {
+                let player_id = player_id.to_string();
                 let total_bet = current_bet.saturating_add(amount);
                 {
                     let player = self
                         .players
-                        .get(player_id)
-                        .ok_or_else(|| ServerError::PlayerNotFound(player_id.to_string()))?;
+                        .get(&player_id)
+                        .ok_or_else(|| ServerError::PlayerNotFound(player_id.clone()))?;
                     self.validate_raise_amount(player, total_bet, current_bet)?;
                 }
 
                 let actual_raise = {
                     let player = self
                         .players
-                        .get(player_id)
-                        .ok_or_else(|| ServerError::PlayerNotFound(player_id.to_string()))?;
+                        .get(&player_id)
+                        .ok_or_else(|| ServerError::PlayerNotFound(player_id.clone()))?;
                     total_bet.saturating_sub(player.current_bet)
                 };
 
@@ -593,8 +600,8 @@ impl PokerGame {
 
                 let player = self
                     .players
-                    .get_mut(player_id)
-                    .ok_or_else(|| ServerError::PlayerNotFound(player_id.to_string()))?;
+                    .get_mut(&player_id)
+                    .ok_or(ServerError::PlayerNotFound(player_id))?;
                 player.chips = player.chips.saturating_sub(actual_raise);
                 player.current_bet = player.current_bet.saturating_add(actual_raise);
                 self.pot = new_pot;
@@ -606,20 +613,29 @@ impl PokerGame {
                 }
             }
             PlayerAction::AllIn => {
-                let player = self
-                    .players
-                    .get_mut(player_id)
-                    .ok_or_else(|| ServerError::PlayerNotFound(player_id.to_string()))?;
-                let all_in_amount = player.chips;
-                let new_bet = player.current_bet.saturating_add(all_in_amount);
+                let player_id = player_id.to_string();
+                let all_in_amount = {
+                    let player = self
+                        .players
+                        .get(&player_id)
+                        .ok_or_else(|| ServerError::PlayerNotFound(player_id.clone()))?;
+                    player.chips
+                };
+                let new_bet = {
+                    let player = self
+                        .players
+                        .get(&player_id)
+                        .ok_or_else(|| ServerError::PlayerNotFound(player_id.clone()))?;
+                    player.current_bet.saturating_add(all_in_amount)
+                };
                 let new_pot = self.calculate_new_pot(all_in_amount).ok_or_else(|| {
                     ServerError::InvalidBet("Pot size exceeds maximum allowed".to_string())
                 })?;
 
                 let player = self
                     .players
-                    .get_mut(player_id)
-                    .ok_or_else(|| ServerError::PlayerNotFound(player_id.to_string()))?;
+                    .get_mut(&player_id)
+                    .ok_or(ServerError::PlayerNotFound(player_id))?;
                 player.chips = 0;
                 player.current_bet = new_bet;
                 self.pot = new_pot;

@@ -7,7 +7,7 @@ use futures::stream::StreamExt;
 use futures::SinkExt;
 use log::{debug, error, info, warn};
 use parking_lot::Mutex;
-use poker_protocol::{ClientMessage, HmacKey, NonceCache, ServerMessage};
+use poker_protocol::{ClientMessage, HmacKey, NonceCache, ServerMessage, HMAC_SECRET_LEN};
 use rand::prelude::SliceRandom;
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -21,8 +21,6 @@ use tokio_tungstenite::tungstenite::Message;
 use uuid::Uuid;
 
 pub const SHUTDOWN_TIMEOUT_SECS: u64 = 5;
-
-const HMAC_SECRET_LEN: usize = 32;
 
 pub struct TokenBucketRateLimiter {
     tokens: std::sync::atomic::AtomicU64,

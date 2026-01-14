@@ -250,11 +250,12 @@ impl PartialOrd for HandEvaluation {
 
 impl HandEvaluation {
     pub fn high_card(cards: &[Card]) -> Self {
+        let top_rank = cards.iter().map(|c| c.rank as i32).max().unwrap_or(0);
+
         let mut ranks: Vec<_> = cards.iter().map(|c| c.rank as u8).collect();
         ranks.sort();
         ranks.reverse();
 
-        let top_rank = ranks.first().map(|&r| r as i32).unwrap_or(0);
         let top_rank_display = ranks
             .first()
             .and_then(|&r| Rank::from_u8(r))
