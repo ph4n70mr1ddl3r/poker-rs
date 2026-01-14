@@ -348,7 +348,9 @@ fn setup_network(mut commands: Commands, server_config: Res<ServerConfig>) {
         let write_task = tokio::spawn(async move {
             while let Some(msg) = write_rx.recv().await {
                 debug!("Sending to server: {} bytes", msg.len());
-                let _ = write.send(Message::Text(msg.into())).await;
+                if let Err(e) = write.send(Message::Text(msg.into())).await {
+                    error!("Failed to send message to server: {}", e);
+                }
             }
         });
 
@@ -557,6 +559,7 @@ fn handle_network_messages(
                     app_state.game_state.add_chat_message(msg);
                 }
             }
+            handle_network_messages(app_state, network_res, commands);
         }
         Err(mpsc::TryRecvError::Empty) => {}
         Err(mpsc::TryRecvError::Disconnected) => {

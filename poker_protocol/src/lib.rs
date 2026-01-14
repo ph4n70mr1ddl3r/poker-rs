@@ -147,8 +147,8 @@ impl Default for HmacKey {
         match Self::new() {
             Ok(key) => key,
             Err(e) => {
-                log::error!("Failed to generate HMAC key, using zero key: {}", e);
-                Self([0u8; HMAC_SECRET_LEN])
+                log::error!("Failed to generate HMAC key: {}", e);
+                panic!("Critical security failure: Cannot generate HMAC key. Server cannot start without a valid key.");
             }
         }
     }

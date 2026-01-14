@@ -52,10 +52,10 @@ impl TokenBucketRateLimiter {
             .as_millis() as u64;
 
         loop {
-            let tokens = self.tokens.load(std::sync::atomic::Ordering::Acquire);
+            let tokens = self.tokens.load(std::sync::atomic::Ordering::Relaxed);
             let last_update_ms = self
                 .last_update_ms
-                .load(std::sync::atomic::Ordering::Acquire);
+                .load(std::sync::atomic::Ordering::Relaxed);
 
             let elapsed_ms = now_ms.saturating_sub(last_update_ms);
             let refill = elapsed_ms
