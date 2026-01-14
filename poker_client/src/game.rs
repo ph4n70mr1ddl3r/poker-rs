@@ -7,12 +7,9 @@ pub use poker_protocol::{
 };
 
 /// Client-side player representation for UI display.
-/// Uses String for hole_cards to store formatted card representations (e.g., "A♥", "K♠").
-/// This differs from poker_protocol::PlayerState which uses the Card type for game logic.
-/// The conversion happens in update_player() when syncing with server state.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct Player {
+    #[allow(dead_code)]
     pub id: String,
     pub name: String,
     pub chips: i32,
