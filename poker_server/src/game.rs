@@ -147,7 +147,7 @@ impl PokerGame {
     }
 
     fn create_deck(&mut self) {
-        self.deck = Vec::new();
+        self.deck = Vec::with_capacity(52);
         for suit in [Suit::Clubs, Suit::Diamonds, Suit::Hearts, Suit::Spades] {
             for rank in [
                 Rank::Two,
@@ -208,7 +208,7 @@ impl PokerGame {
         }
 
         self.pot = total_pot;
-        self.min_raise = self.big_blind * 2;
+        self.min_raise = self.big_blind.saturating_mul(2);
     }
 
     fn deal_hole_cards(&mut self) {

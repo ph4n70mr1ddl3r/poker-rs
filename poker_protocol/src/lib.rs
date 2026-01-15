@@ -1,4 +1,5 @@
 use parking_lot::Mutex;
+use ring::rand::SecureRandom;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fmt;
@@ -45,19 +46,15 @@ impl NonceCache {
         let expiry_duration = Duration::from_millis(NONCE_EXPIRY_MS);
         let mut data = self.data.lock();
 
+        data.retain(|_, &mut timestamp| now.duration_since(timestamp) < expiry_duration);
+
         if data.contains_key(&nonce) {
             return true;
         }
 
-        data.retain(|_, &mut timestamp| now.duration_since(timestamp) < expiry_duration);
-
         if data.len() >= NONCE_CACHE_SIZE {
-            let oldest_nonce = data
-                .iter()
-                .min_by_key(|(_, timestamp)| *timestamp)
-                .map(|(nonce, _)| *nonce);
-            if let Some(nonce) = oldest_nonce {
-                data.remove(&nonce);
+            if let Some((&oldest_nonce, _)) = data.iter().min_by_key(|(_, timestamp)| *timestamp) {
+                data.remove(&oldest_nonce);
             }
         }
 
@@ -81,19 +78,11 @@ impl HmacKey {
     /// # Returns
     /// `Ok(Self)` on success, `Err(ProtocolError::HmacKeyGeneration)` on failure
     pub fn new() -> Result<Self, ProtocolError> {
-        ring::hmac::Key::generate(ring::hmac::HMAC_SHA256, &ring::rand::SystemRandom::new())
-            .map_err(|_| ProtocolError::HmacKeyGeneration)
-            .and_then(|key| {
-                let tag = ring::hmac::sign(&key, &[]);
-                let key_bytes = tag.as_ref();
-                if key_bytes.len() >= HMAC_SECRET_LEN {
-                    let mut array = [0u8; HMAC_SECRET_LEN];
-                    array.copy_from_slice(&key_bytes[..HMAC_SECRET_LEN]);
-                    Ok(Self(array))
-                } else {
-                    Err(ProtocolError::HmacKeyGeneration)
-                }
-            })
+        let mut array = [0u8; HMAC_SECRET_LEN];
+        let rng = ring::rand::SystemRandom::new();
+        rng.fill(&mut array)
+            .map_err(|_| ProtocolError::HmacKeyGeneration)?;
+        Ok(Self(array))
     }
 
     /// Creates an HMAC key from raw byte data.
@@ -254,6 +243,29 @@ pub enum PlayerAction {
 }
 
 impl PlayerAction {
+    fn parse_amount_action(
+        value: &serde_json::Value,
+        key: &str,
+        max_chips: Option<i32>,
+    ) -> Option<(i32, Self)> {
+        let amount = value.get(key).and_then(|v| v.as_i64())?;
+        if amount <= 0 {
+            return None;
+        }
+        let amount = amount as i32;
+        if let Some(max) = max_chips {
+            if amount > max {
+                return None;
+            }
+        }
+        let action = match key {
+            "Bet" => PlayerAction::Bet(amount),
+            "Raise" => PlayerAction::Raise(amount),
+            _ => return None,
+        };
+        Some((amount, action))
+    }
+
     /// Parses a player action from a JSON value.
     ///
     /// # Arguments
@@ -271,30 +283,10 @@ impl PlayerAction {
                 "AllIn" => Some(PlayerAction::AllIn),
                 _ => None,
             }
-        } else if let Some(bet_amount) = value.get("Bet").and_then(|v| v.as_i64()) {
-            if bet_amount > 0 {
-                let amount = bet_amount as i32;
-                if let Some(max) = max_chips {
-                    if amount > max {
-                        return None;
-                    }
-                }
-                Some(PlayerAction::Bet(amount))
-            } else {
-                None
-            }
-        } else if let Some(raise_amount) = value.get("Raise").and_then(|v| v.as_i64()) {
-            if raise_amount > 0 {
-                let amount = raise_amount as i32;
-                if let Some(max) = max_chips {
-                    if amount > max {
-                        return None;
-                    }
-                }
-                Some(PlayerAction::Raise(amount))
-            } else {
-                None
-            }
+        } else if let Some((_, action)) = Self::parse_amount_action(value, "Bet", max_chips) {
+            Some(action)
+        } else if let Some((_, action)) = Self::parse_amount_action(value, "Raise", max_chips) {
+            Some(action)
         } else {
             None
         }
