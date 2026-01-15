@@ -18,6 +18,7 @@ const BROADCAST_SEND_TIMEOUT_MS: u64 = 5000;
 const MAX_BROADCAST_TASKS: usize = 50;
 const MAX_SEND_TASKS: usize = 100;
 
+/// Type alias for player identifiers.
 pub type PlayerId = String;
 
 #[derive(Debug, Clone)]
@@ -100,11 +101,19 @@ impl PokerServer {
                 .unwrap_or(true)
     }
 
+    /// Registers a new connection from an IP address.
+    ///
+    /// # Arguments
+    /// * `ip` - The IP address of the incoming connection
     pub fn register_connection(&mut self, ip: &str) {
         self.connection_count += 1;
         *self.ip_connections.entry(ip.to_string()).or_insert(0) += 1;
     }
 
+    /// Unregisters a connection from an IP address.
+    ///
+    /// # Arguments
+    /// * `ip` - The IP address of the disconnecting connection
     pub fn unregister_connection(&mut self, ip: &str) {
         self.connection_count = self.connection_count.saturating_sub(1);
         if let Some(count) = self.ip_connections.get_mut(ip) {
@@ -115,6 +124,15 @@ impl PokerServer {
         }
     }
 
+    /// Creates a new poker game table.
+    ///
+    /// # Arguments
+    /// * `game_id` - Unique identifier for this game table
+    /// * `small_blind` - Small blind amount
+    /// * `big_blind` - Big blind amount
+    ///
+    /// # Returns
+    /// A new `Arc<Mutex<PokerGame>>` for the created game
     pub fn create_game(
         &mut self,
         game_id: String,

@@ -243,7 +243,7 @@ impl Default for HmacKey {
 /// Error message from the server.
 ///
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PlayerAction {
     Fold,
     Check,
@@ -354,7 +354,7 @@ impl fmt::Display for PlayerAction {
 }
 
 /// A signed message with HMAC authentication, timestamp, and nonce for replay protection.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SignedMessage {
     /// The JSON-serialized message content
     pub message: String,
@@ -447,7 +447,7 @@ impl SignedMessage {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ClientMessage {
     Connect,
     Reconnect(String),
@@ -470,7 +470,7 @@ impl fmt::Display for ClientMessage {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ServerMessage {
     Connected(String),
     Ping(u64),
@@ -485,7 +485,7 @@ pub enum ServerMessage {
     Error(String),
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GameStateUpdate {
     pub game_id: String,
     pub hand_number: i32,
@@ -496,7 +496,7 @@ pub struct GameStateUpdate {
     pub dealer_position: usize,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PlayerUpdate {
     pub player_id: String,
     pub player_name: String,
@@ -509,7 +509,7 @@ pub struct PlayerUpdate {
     pub hole_cards: Vec<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ActionRequiredUpdate {
     pub player_id: String,
     pub player_name: String,
@@ -518,26 +518,26 @@ pub struct ActionRequiredUpdate {
     pub player_chips: i32,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PlayerConnectedUpdate {
     pub player_id: String,
     pub player_name: String,
     pub chips: i32,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PlayerDisconnectedUpdate {
     pub player_id: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ShowdownUpdate {
     pub community_cards: Vec<String>,
     pub hands: Vec<(String, Vec<String>, String, String)>,
     pub winners: Vec<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ChatMessage {
     pub player_id: String,
     pub player_name: String,

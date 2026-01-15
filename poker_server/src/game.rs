@@ -815,12 +815,10 @@ impl PokerGame {
 
         let side_pots = self.calculate_side_pots();
 
+        #[allow(clippy::explicit_auto_deref)]
         let mut hand_evals: Vec<(&PlayerState, HandEvaluation)> = active_players
             .iter()
-            .map(|p| {
-                #[allow(clippy::explicit_auto_deref)]
-                (*p, self.evaluate_hand(*p))
-            })
+            .map(|p| (*p, self.evaluate_hand(*p)))
             .collect();
 
         if hand_evals.is_empty() {

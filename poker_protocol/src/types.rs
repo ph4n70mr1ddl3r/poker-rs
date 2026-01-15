@@ -173,7 +173,7 @@ impl fmt::Display for Street {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum GameStage {
     WaitingForPlayers,
     PostingBlinds,
@@ -225,7 +225,7 @@ pub enum HandRank {
     StraightFlush,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HandEvaluation {
     pub rank: HandRank,
     pub primary_rank: i32,

@@ -31,7 +31,6 @@ fn mutex_poison_error(context: &str) -> String {
 }
 
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 enum ClientNetworkMessage {
     Connected(String),
     PlayerIdConfirmed(String),
