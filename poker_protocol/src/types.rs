@@ -447,7 +447,7 @@ impl HandEvaluation {
     }
 
     pub fn straight_flush(straight_high: u8) -> Self {
-        let is_wheel = straight_high == 6;
+        let is_wheel = straight_high == 5;
         let straight_high_display = if is_wheel {
             "5-4-3-2-A (Wheel)".to_string()
         } else {

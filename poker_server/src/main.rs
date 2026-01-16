@@ -1,8 +1,6 @@
 mod game;
 mod server;
 
-use crate::game::PokerGame;
-use crate::server::PokerServer;
 use futures::stream::StreamExt;
 use futures::SinkExt;
 use log::{debug, error, info, warn};
@@ -20,6 +18,9 @@ use tokio_tungstenite::accept_async;
 use tokio_tungstenite::tungstenite::Message;
 use uuid::Uuid;
 
+use crate::game::PokerGame;
+use crate::server::PokerServer;
+
 pub const SHUTDOWN_TIMEOUT_SECS: u64 = 5;
 
 pub struct TokenBucketRateLimiter {
@@ -33,8 +34,7 @@ impl TokenBucketRateLimiter {
     pub fn new(max_tokens: u64, refill_rate: u64) -> Self {
         let now_ms = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_millis() as u64;
+            .map_or(0, |d| d.as_millis() as u64);
         Self {
             tokens: std::sync::atomic::AtomicU64::new(max_tokens),
             last_update_ms: std::sync::atomic::AtomicU64::new(now_ms),
@@ -46,8 +46,7 @@ impl TokenBucketRateLimiter {
     pub async fn allow(&self) -> bool {
         let now_ms = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_millis() as u64;
+            .map_or(0, |d| d.as_millis() as u64);
 
         loop {
             let tokens = self.tokens.load(std::sync::atomic::Ordering::Relaxed);
@@ -416,9 +415,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             {
                 error!("Error handling connection: {}", e);
             }
-
-            let mut s = server.lock();
-            s.disconnect_player(&player_id);
         });
 
         active_connections.push(handle);

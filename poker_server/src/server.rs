@@ -14,7 +14,9 @@ use uuid::Uuid;
 
 use crate::game::PokerGame;
 
+/// Maximum total concurrent connections to the server
 pub const MAX_CONNECTIONS: usize = 100;
+/// Maximum concurrent connections from a single IP address
 pub const MAX_CONNECTIONS_PER_IP: usize = 5;
 const BROADCAST_SEND_TIMEOUT_MS: u64 = 5000;
 const MAX_BROADCAST_TASKS: usize = 50;
@@ -406,10 +408,12 @@ impl PokerServer {
                     .ok_or(ServerError::PlayerNotInGame)?
                     .clone();
 
-                if let Some(game) = self.games.get(&session) {
-                    let mut poker_game = game.lock();
-                    poker_game.sit_out(player_id);
-                }
+                let game = self
+                    .games
+                    .get(&session)
+                    .ok_or_else(|| ServerError::GameNotFound(session.clone()))?;
+                let mut poker_game = game.lock();
+                poker_game.sit_out(player_id);
             }
             ClientMessage::Return => {
                 let session = self
@@ -418,10 +422,12 @@ impl PokerServer {
                     .ok_or(ServerError::PlayerNotInGame)?
                     .clone();
 
-                if let Some(game) = self.games.get(&session) {
-                    let mut poker_game = game.lock();
-                    poker_game.return_to_game(player_id);
-                }
+                let game = self
+                    .games
+                    .get(&session)
+                    .ok_or_else(|| ServerError::GameNotFound(session.clone()))?;
+                let mut poker_game = game.lock();
+                poker_game.return_to_game(player_id);
             }
         }
 
