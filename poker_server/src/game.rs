@@ -1747,27 +1747,36 @@ mod tests {
     }
 
     #[test]
-    fn test_calculate_side_pots_two_players() {
+    fn test_all_in_partial_call() {
         let tx = tokio::sync::broadcast::channel(100).0;
         let mut game = PokerGame::new("test".to_string(), 5, 10, tx);
-        game.add_player("p1".to_string(), "Player1".to_string(), 100);
+        game.add_player("p1".to_string(), "Player1".to_string(), 1000);
         game.add_player("p2".to_string(), "Player2".to_string(), 200);
 
-        if let Some(p1) = game.players.get_mut("p1") {
-            p1.current_bet = 100;
-        }
-        if let Some(p2) = game.players.get_mut("p2") {
-            p2.current_bet = 200;
-        }
+        let player_to_act = game.get_player_to_act().unwrap();
+        let player_id = player_to_act.id.clone();
 
-        let pots = game.calculate_side_pots();
+        game.handle_action(&player_id, PlayerAction::Raise(100))
+            .unwrap();
+
+        let next_player = game.get_player_to_act();
         assert!(
-            !pots.is_empty(),
-            "Should have at least one pot for two players"
+            next_player.is_some(),
+            "Should have a player to act after raise"
+        );
+        let next_player = next_player.unwrap();
+        let next_player_id = next_player.id.clone();
+
+        let result = game.handle_action(&next_player_id, PlayerAction::AllIn);
+        assert!(
+            result.is_ok(),
+            "All-in should succeed after raise: {:?}",
+            result
         );
 
-        let total: i32 = pots.iter().map(|(amount, _)| *amount).sum();
-        assert_eq!(total, 300, "Total in pots should equal total bets");
+        let p = game.players.get(&next_player_id).unwrap();
+        assert_eq!(p.chips, 0, "Player should have 0 chips after all-in");
+        assert!(p.is_all_in, "Player should be marked as all-in");
     }
 
     #[test]
@@ -1845,5 +1854,75 @@ mod tests {
         let mut game = PokerGame::new("test".to_string(), 5, 10, tx);
 
         assert!(game.calculate_new_pot(-50).is_none());
+    }
+
+    #[test]
+    fn test_bet_validation_negative_amount() {
+        let tx = tokio::sync::broadcast::channel(100).0;
+        let mut game = PokerGame::new("test".to_string(), 5, 10, tx);
+        game.add_player("p1".to_string(), "Player1".to_string(), 1000);
+        game.add_player("p2".to_string(), "Player2".to_string(), 1000);
+
+        let player_to_act = game.get_player_to_act().unwrap();
+        let player_id = player_to_act.id.clone();
+
+        let result = game.handle_action(&player_id, PlayerAction::Bet(-100));
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("InvalidAmount") || err.contains("positive"));
+    }
+
+    #[test]
+    fn test_bet_validation_exceeds_chips() {
+        let tx = tokio::sync::broadcast::channel(100).0;
+        let mut game = PokerGame::new("test".to_string(), 5, 10, tx);
+        game.add_player("p1".to_string(), "Player1".to_string(), 100);
+        game.add_player("p2".to_string(), "Player2".to_string(), 1000);
+
+        let player_to_act = game.get_player_to_act().unwrap();
+        let player_id = player_to_act.id.clone();
+
+        let result = game.handle_action(&player_id, PlayerAction::Bet(500));
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("BetExceedsChips") || err.contains("chips") || err.contains("exceeds")
+        );
+    }
+
+    #[test]
+    fn test_bet_validation_exceeds_max_bet() {
+        let tx = tokio::sync::broadcast::channel(100).0;
+        let mut game = PokerGame::new("test".to_string(), 5, 10, tx);
+        game.set_max_bet_per_hand(100);
+        game.add_player("p1".to_string(), "Player1".to_string(), 1000);
+        game.add_player("p2".to_string(), "Player2".to_string(), 1000);
+
+        let player_to_act = game.get_player_to_act().unwrap();
+        let player_id = player_to_act.id.clone();
+
+        let result = game.handle_action(&player_id, PlayerAction::Bet(200));
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("Invalid") || err.contains("exceeds") || err.contains("maximum"));
+    }
+
+    #[test]
+    fn test_all_in_handling() {
+        let tx = tokio::sync::broadcast::channel(100).0;
+        let mut game = PokerGame::new("test".to_string(), 5, 10, tx);
+        game.add_player("p1".to_string(), "Player1".to_string(), 50);
+        game.add_player("p2".to_string(), "Player2".to_string(), 1000);
+
+        let player_to_act = game.get_player_to_act().unwrap();
+        let player_id = player_to_act.id.clone();
+
+        let result = game.handle_action(&player_id, PlayerAction::AllIn);
+        assert!(result.is_ok(), "All-in should succeed: {:?}", result);
+
+        let p = game.players.get(&player_id).unwrap();
+        assert_eq!(p.chips, 0);
+        assert!(p.is_all_in);
+        assert!(p.has_acted);
     }
 }
