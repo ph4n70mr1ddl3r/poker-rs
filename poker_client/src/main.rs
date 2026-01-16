@@ -401,87 +401,91 @@ fn handle_network_messages(
     network_res: Res<NetworkResources>,
     mut commands: Commands,
 ) {
-    let rx = network_res.rx.lock();
-    match rx.try_recv() {
-        Ok(message) => {
-            drop(rx);
-            info!("Got message: {:?}", message);
-            match message {
-                ClientNetworkMessage::PlayerIdConfirmed(id) => {
-                    app_state.connected = true;
-                    app_state.game_state.my_id = id.clone();
-                    info!("Server confirmed my player ID: {}", id);
-                }
-                ClientNetworkMessage::Error(msg) => {
-                    error!("Error: {}", msg);
-                    app_state.game_state.add_error(msg);
-                }
-                ClientNetworkMessage::Disconnected => {
-                    app_state.connected = false;
-                    info!("Disconnected - triggering reconnection...");
-                    trigger_reconnection(&network_res, &mut commands);
-                }
-                ClientNetworkMessage::PlayerDisconnected(player_id) => {
-                    info!("Player disconnected: {}", player_id);
-                    app_state.game_state.players.remove(&player_id);
-                    if app_state.game_state.my_id == player_id {
+    loop {
+        let rx = network_res.rx.lock();
+        match rx.try_recv() {
+            Ok(message) => {
+                drop(rx);
+                info!("Got message: {:?}", message);
+                match message {
+                    ClientNetworkMessage::PlayerIdConfirmed(id) => {
+                        app_state.connected = true;
+                        app_state.game_state.my_id = id.clone();
+                        info!("Server confirmed my player ID: {}", id);
+                    }
+                    ClientNetworkMessage::Error(msg) => {
+                        error!("Error: {}", msg);
+                        app_state.game_state.add_error(msg);
+                    }
+                    ClientNetworkMessage::Disconnected => {
                         app_state.connected = false;
+                        info!("Disconnected - triggering reconnection...");
                         trigger_reconnection(&network_res, &mut commands);
+                        break;
                     }
-                }
-                ClientNetworkMessage::PlayerConnected(update) => {
-                    info!(
-                        "Player connected: {} ({})",
-                        update.player_name, update.player_id
-                    );
-                    if app_state.game_state.my_id.is_empty() {
-                        app_state.game_state.my_id = update.player_id.clone();
-                        info!("Set my_id to server ID: {}", update.player_id);
+                    ClientNetworkMessage::PlayerDisconnected(player_id) => {
+                        info!("Player disconnected: {}", player_id);
+                        app_state.game_state.players.remove(&player_id);
+                        if app_state.game_state.my_id == player_id {
+                            app_state.connected = false;
+                            trigger_reconnection(&network_res, &mut commands);
+                            break;
+                        }
                     }
-                    app_state.game_state.add_player(
-                        update.player_name.clone(),
-                        update.player_id.clone(),
-                        update.chips,
-                    );
-                }
-                ClientNetworkMessage::PlayerUpdates(updates) => {
-                    info!("Player updates received: {} players", updates.len());
+                    ClientNetworkMessage::PlayerConnected(update) => {
+                        info!(
+                            "Player connected: {} ({})",
+                            update.player_name, update.player_id
+                        );
+                        if app_state.game_state.my_id.is_empty() {
+                            app_state.game_state.my_id = update.player_id.clone();
+                            info!("Set my_id to server ID: {}", update.player_id);
+                        }
+                        app_state.game_state.add_player(
+                            update.player_name.clone(),
+                            update.player_id.clone(),
+                            update.chips,
+                        );
+                    }
+                    ClientNetworkMessage::PlayerUpdates(updates) => {
+                        info!("Player updates received: {} players", updates.len());
 
-                    for update in updates {
-                        app_state.game_state.update_player(update);
-                    }
+                        for update in updates {
+                            app_state.game_state.update_player(update);
+                        }
 
-                    info!("My ID is: {}", app_state.game_state.my_id);
-                }
-                ClientNetworkMessage::GameStateUpdate(update) => {
-                    info!(
-                        "Game state update: hand #{}, pot: ${}",
-                        update.hand_number, update.pot
-                    );
-                    app_state.game_state.apply_update(update);
-                }
-                ClientNetworkMessage::ActionRequired(update) => {
-                    info!(
-                        "Action required from: {} (my_id: {})",
-                        update.player_id, app_state.game_state.my_id
-                    );
-                    app_state.game_state.set_action_required(update);
-                }
-                ClientNetworkMessage::Showdown(update) => {
-                    info!("Showdown! Winners: {:?}", update.winners);
-                    app_state.game_state.show_showdown(update);
-                }
-                ClientNetworkMessage::Chat(msg) => {
-                    info!("Chat from {}: {}", msg.player_name, msg.text);
-                    app_state.game_state.add_chat_message(msg);
+                        info!("My ID is: {}", app_state.game_state.my_id);
+                    }
+                    ClientNetworkMessage::GameStateUpdate(update) => {
+                        info!(
+                            "Game state update: hand #{}, pot: ${}",
+                            update.hand_number, update.pot
+                        );
+                        app_state.game_state.apply_update(update);
+                    }
+                    ClientNetworkMessage::ActionRequired(update) => {
+                        info!(
+                            "Action required from: {} (my_id: {})",
+                            update.player_id, app_state.game_state.my_id
+                        );
+                        app_state.game_state.set_action_required(update);
+                    }
+                    ClientNetworkMessage::Showdown(update) => {
+                        info!("Showdown! Winners: {:?}", update.winners);
+                        app_state.game_state.show_showdown(update);
+                    }
+                    ClientNetworkMessage::Chat(msg) => {
+                        info!("Chat from {}: {}", msg.player_name, msg.text);
+                        app_state.game_state.add_chat_message(msg);
+                    }
                 }
             }
-            handle_network_messages(app_state, network_res, commands);
-        }
-        Err(mpsc::TryRecvError::Empty) => {}
-        Err(mpsc::TryRecvError::Disconnected) => {
-            info!("Channel disconnected!");
-            trigger_reconnection(&network_res, &mut commands);
+            Err(mpsc::TryRecvError::Empty) => break,
+            Err(mpsc::TryRecvError::Disconnected) => {
+                info!("Channel disconnected!");
+                trigger_reconnection(&network_res, &mut commands);
+                break;
+            }
         }
     }
 }
@@ -536,9 +540,17 @@ fn trigger_reconnection(network_res: &Res<NetworkResources>, _commands: &mut Com
         let connect_msg = serde_json::json!({
             "type": "connect"
         });
-        let _ = write
+        if let Err(e) = write
             .send(Message::Text(connect_msg.to_string().into()))
-            .await;
+            .await
+        {
+            error!("Failed to send connect message during reconnection: {}", e);
+            let _ = tx_clone.send(ClientNetworkMessage::Error(
+                "Failed to send connect message".to_string(),
+            ));
+            let _ = tx_clone.send(ClientNetworkMessage::Disconnected);
+            return;
+        }
 
         let (_write_tx, mut write_rx) = tokio::sync::mpsc::channel::<String>(100);
         let write_task = tokio::spawn(async move {

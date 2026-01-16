@@ -1,5 +1,3 @@
-use parking_lot::Mutex;
-use ring::rand::SecureRandom;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fmt;
@@ -8,6 +6,9 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 mod errors;
 mod types;
+
+use parking_lot::Mutex;
+use ring::rand::SecureRandom;
 
 pub use errors::{ConnectionError, ProtocolError, ServerError};
 pub use types::{
@@ -133,10 +134,7 @@ impl HmacKey {
 
 impl Default for HmacKey {
     fn default() -> Self {
-        Self::new().unwrap_or_else(|_| {
-            log::error!("Failed to generate HMAC key - using zero key as fallback");
-            Self([0u8; HMAC_SECRET_LEN])
-        })
+        Self::new().expect("Failed to generate HMAC key - this is a fatal error")
     }
 }
 
@@ -289,7 +287,7 @@ impl PlayerAction {
         }
     }
 
-    /// Parses a player action with a maximum chip limit.
+    /// Parses a player action from a JSON value with a maximum chip limit.
     ///
     /// # Arguments
     /// * `value` - The JSON value to parse
@@ -309,22 +307,15 @@ impl PlayerAction {
     /// # Returns
     /// `Some(PlayerAction)` if valid, `None` otherwise
     pub fn parse_action(s: &str) -> Option<Self> {
-        if let Some(action_str) = s.strip_prefix('\"').and_then(|s| s.strip_suffix('\"')) {
-            match action_str {
-                "Fold" => Some(PlayerAction::Fold),
-                "Check" => Some(PlayerAction::Check),
-                "Call" => Some(PlayerAction::Call),
-                "AllIn" => Some(PlayerAction::AllIn),
-                _ => None,
-            }
-        } else {
-            match s {
-                "Fold" => Some(PlayerAction::Fold),
-                "Check" => Some(PlayerAction::Check),
-                "Call" => Some(PlayerAction::Call),
-                "AllIn" => Some(PlayerAction::AllIn),
-                _ => None,
-            }
+        let action_str = s
+            .strip_prefix('\"')
+            .and_then(|s| s.strip_suffix('\"').or(Some(s)));
+        match action_str.unwrap_or(s) {
+            "Fold" => Some(PlayerAction::Fold),
+            "Check" => Some(PlayerAction::Check),
+            "Call" => Some(PlayerAction::Call),
+            "AllIn" => Some(PlayerAction::AllIn),
+            _ => None,
         }
     }
 }

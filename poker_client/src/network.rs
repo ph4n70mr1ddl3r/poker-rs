@@ -83,15 +83,7 @@ fn parse_message_by_type(
                 .unwrap_or(0);
             Ok(NetworkMessage::Pong(()))
         }
-        "Connected" | "connected" => {
-            let player_id = value["player_id"]
-                .as_str()
-                .or(value["id"].as_str())
-                .unwrap_or("unknown")
-                .to_string();
-            Ok(NetworkMessage::PlayerIdConfirmed(player_id))
-        }
-        "Reconnect" | "reconnect" => {
+        "Connected" | "connected" | "Reconnect" | "reconnect" => {
             let player_id = value["player_id"]
                 .as_str()
                 .or(value["id"].as_str())
