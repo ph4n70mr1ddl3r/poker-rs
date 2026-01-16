@@ -183,16 +183,29 @@ pub enum GameStage {
     HandComplete,
 }
 
+/// Represents the complete state of a player at the poker table.
+///
+/// This struct tracks a player's chips, current bet, hole cards, and various
+/// status flags that determine their participation in the current hand.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PlayerState {
+    /// Unique identifier for the player
     pub id: String,
+    /// Display name of the player
     pub name: String,
+    /// Number of chips the player has remaining
     pub chips: i32,
+    /// Current bet amount in the active betting round
     pub current_bet: i32,
+    /// The player's hole cards (hidden until showdown)
     pub hole_cards: Vec<Card>,
+    /// Whether the player has acted in the current betting round
     pub has_acted: bool,
+    /// Whether the player is all-in (cannot act further)
     pub is_all_in: bool,
+    /// Whether the player has folded this hand
     pub is_folded: bool,
+    /// Whether the player is sitting out and won't receive cards
     pub is_sitting_out: bool,
 }
 

@@ -2,9 +2,10 @@ use bevy::prelude::*;
 use bevy_egui::{egui, EguiContexts, EguiPlugin};
 use futures::SinkExt;
 use futures::StreamExt;
+use parking_lot::Mutex;
 use std::env;
 use std::sync::mpsc;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use tokio::runtime::Handle;
 use tokio::time::{timeout, Duration};
 use tokio_tungstenite::tungstenite::Message;
@@ -23,16 +24,8 @@ mod network;
 
 use game::PokerGameState;
 
-fn mutex_poison_error(context: &str) -> String {
-    format!(
-        "Mutex poisoned during {} - connection state corrupted. Please restart the application.",
-        context
-    )
-}
-
 #[derive(Debug, Clone)]
 enum ClientNetworkMessage {
-    Connected(String),
     PlayerIdConfirmed(String),
     GameStateUpdate(crate::game::GameStateUpdate),
     PlayerUpdates(Vec<crate::game::PlayerUpdate>),
@@ -43,7 +36,6 @@ enum ClientNetworkMessage {
     Chat(crate::game::ChatMessage),
     Error(String),
     Disconnected,
-    Reconnecting(u32),
 }
 
 #[derive(Debug, Clone)]
@@ -167,9 +159,7 @@ async fn connect_with_retry(
 > {
     loop {
         let delay = {
-            let mut state = reconnect_state
-                .lock()
-                .map_err(|_| mutex_poison_error("reconnection state access"))?;
+            let mut state = reconnect_state.lock();
             match state.next_attempt() {
                 Some(d) => d,
                 None => {
@@ -181,12 +171,7 @@ async fn connect_with_retry(
             }
         };
 
-        let attempt = {
-            reconnect_state
-                .lock()
-                .map_err(|_| mutex_poison_error("attempt number retrieval"))?
-                .attempt
-        };
+        let attempt = { reconnect_state.lock().attempt };
 
         info!(
             "Attempting to connect to {} (attempt {})...",
@@ -203,24 +188,14 @@ async fn connect_with_retry(
             Ok(Ok((ws_stream, _))) => {
                 info!("WebSocket handshake successful!");
                 {
-                    let mut state = reconnect_state
-                        .lock()
-                        .map_err(|_| mutex_poison_error("state reset"))?;
+                    let mut state = reconnect_state.lock();
                     state.reset();
                 }
                 return Ok((ws_stream, server_addr.to_string()));
             }
             Ok(Err(e)) => {
                 warn!("Connection attempt failed: {}", e);
-                let attempt = match reconnect_state.lock() {
-                    Ok(guard) => guard.attempt,
-                    Err(_) => {
-                        let _ = tx_for_network.send(ClientNetworkMessage::Error(
-                            mutex_poison_error("error reporting"),
-                        ));
-                        continue;
-                    }
-                };
+                let attempt = reconnect_state.lock().attempt;
                 let _ = tx_for_network.send(ClientNetworkMessage::Error(format!(
                     "Connection failed (attempt {}): {}",
                     attempt, e
@@ -228,15 +203,7 @@ async fn connect_with_retry(
             }
             Err(_) => {
                 warn!("Connection timed out");
-                let attempt = match reconnect_state.lock() {
-                    Ok(guard) => guard.attempt,
-                    Err(_) => {
-                        let _ = tx_for_network.send(ClientNetworkMessage::Error(
-                            mutex_poison_error("timeout error reporting"),
-                        ));
-                        continue;
-                    }
-                };
+                let attempt = reconnect_state.lock().attempt;
                 let _ = tx_for_network.send(ClientNetworkMessage::Error(format!(
                     "Connection timed out (attempt {})",
                     attempt
@@ -282,15 +249,7 @@ fn setup_network(mut commands: Commands, server_config: Res<ServerConfig>) {
         let ui_tx = ui_tx_for_task;
 
         {
-            let mut state = match connection_state_clone.lock() {
-                Ok(guard) => guard,
-                Err(_) => {
-                    let _ = tx.send(ClientNetworkMessage::Error(mutex_poison_error(
-                        "initial connection state setup",
-                    )));
-                    return;
-                }
-            };
+            let mut state = connection_state_clone.lock();
             *state = ConnectionState::Connecting;
         }
         let (ws_stream, connected_addr) =
@@ -301,10 +260,7 @@ fn setup_network(mut commands: Commands, server_config: Res<ServerConfig>) {
                     let _ = tx.send(ClientNetworkMessage::Disconnected);
                     let _ = tx_for_reconnect.send(ClientNetworkMessage::Error(e));
                     {
-                        let mut state = match connection_state_clone.lock() {
-                            Ok(guard) => guard,
-                            Err(_) => return,
-                        };
+                        let mut state = connection_state_clone.lock();
                         *state = ConnectionState::Disconnected;
                     }
                     return;
@@ -313,15 +269,7 @@ fn setup_network(mut commands: Commands, server_config: Res<ServerConfig>) {
 
         info!("Connected to server at {}", connected_addr);
         {
-            let mut state = match connection_state_clone.lock() {
-                Ok(guard) => guard,
-                Err(_) => {
-                    let _ = tx.send(ClientNetworkMessage::Error(mutex_poison_error(
-                        "post-connection state update",
-                    )));
-                    return;
-                }
-            };
+            let mut state = connection_state_clone.lock();
             *state = ConnectionState::Connected;
         }
 
@@ -427,22 +375,13 @@ fn setup_network(mut commands: Commands, server_config: Res<ServerConfig>) {
 
         let _ = tx.send(ClientNetworkMessage::Disconnected);
         {
-            let mut state = match connection_state_clone.lock() {
-                Ok(guard) => guard,
-                Err(_) => return,
-            };
+            let mut state = connection_state_clone.lock();
             *state = ConnectionState::Disconnected;
         }
     });
 
     {
-        let mut task_guard = match network_task.lock() {
-            Ok(guard) => guard,
-            Err(_) => {
-                error!("Failed to acquire network_task lock");
-                return;
-            }
-        };
+        let mut task_guard = network_task.lock();
         *task_guard = Some(task);
     }
 
@@ -462,25 +401,12 @@ fn handle_network_messages(
     network_res: Res<NetworkResources>,
     mut commands: Commands,
 ) {
-    let rx = match network_res.rx.lock() {
-        Ok(guard) => guard,
-        Err(_) => {
-            let error_msg = mutex_poison_error("network channel access");
-            error!("{}", error_msg);
-            app_state.game_state.add_error(error_msg);
-            app_state.connected = false;
-            return;
-        }
-    };
+    let rx = network_res.rx.lock();
     match rx.try_recv() {
         Ok(message) => {
             drop(rx);
             info!("Got message: {:?}", message);
             match message {
-                ClientNetworkMessage::Connected(id) => {
-                    app_state.connected = true;
-                    info!("Connected with temp ID: {}", id);
-                }
                 ClientNetworkMessage::PlayerIdConfirmed(id) => {
                     app_state.connected = true;
                     app_state.game_state.my_id = id.clone();
@@ -494,14 +420,6 @@ fn handle_network_messages(
                     app_state.connected = false;
                     info!("Disconnected - triggering reconnection...");
                     trigger_reconnection(&network_res, &mut commands);
-                }
-                ClientNetworkMessage::Reconnecting(attempt) => {
-                    app_state.connected = false;
-                    info!("Reconnecting (attempt {})...", attempt);
-                    app_state.game_state.add_error(format!(
-                        "Disconnected. Reconnecting (attempt {})...",
-                        attempt
-                    ));
                 }
                 ClientNetworkMessage::PlayerDisconnected(player_id) => {
                     info!("Player disconnected: {}", player_id);
@@ -576,18 +494,12 @@ fn trigger_reconnection(network_res: &Res<NetworkResources>, _commands: &mut Com
     let runtime = network_res.runtime.clone();
 
     let attempt = {
-        let state = match reconnect_state.lock() {
-            Ok(guard) => guard,
-            Err(_) => return,
-        };
+        let state = reconnect_state.lock();
         state.attempt + 1
     };
 
     {
-        let mut state = match connection_state.lock() {
-            Ok(guard) => guard,
-            Err(_) => return,
-        };
+        let mut state = connection_state.lock();
         *state = ConnectionState::Reconnecting(attempt);
     }
 
@@ -602,10 +514,7 @@ fn trigger_reconnection(network_res: &Res<NetworkResources>, _commands: &mut Com
                 Err(e) => {
                     error!("Reconnection failed: {}", e);
                     {
-                        let mut state = match connection_state.lock() {
-                            Ok(guard) => guard,
-                            Err(_) => return,
-                        };
+                        let mut state = connection_state.lock();
                         *state = ConnectionState::Disconnected;
                     }
                     let _ = tx_clone.send(ClientNetworkMessage::Error(format!(
@@ -618,10 +527,7 @@ fn trigger_reconnection(network_res: &Res<NetworkResources>, _commands: &mut Com
 
         info!("Reconnected to server at {}", connected_addr);
         {
-            let mut state = match connection_state.lock() {
-                Ok(guard) => guard,
-                Err(_) => return,
-            };
+            let mut state = connection_state.lock();
             *state = ConnectionState::Connected;
         }
 
@@ -685,19 +591,13 @@ fn trigger_reconnection(network_res: &Res<NetworkResources>, _commands: &mut Com
 
         let _ = tx.send(ClientNetworkMessage::Disconnected);
         {
-            let mut state = match connection_state.lock() {
-                Ok(guard) => guard,
-                Err(_) => return,
-            };
+            let mut state = connection_state.lock();
             *state = ConnectionState::Disconnected;
         }
     });
 
     {
-        let mut task_guard = match network_task.lock() {
-            Ok(guard) => guard,
-            Err(_) => return,
-        };
+        let mut task_guard = network_task.lock();
         if let Some(old_task) = task_guard.take() {
             old_task.abort();
         }
@@ -958,12 +858,11 @@ fn update_ui(
 
                     ui.label("Raise: $");
                     let raise_amount_str = {
-                        match app_state.raise_amount.try_lock() {
-                            Ok(guard) => (*guard).clone(),
-                            Err(_) => {
-                                ui.label("System busy, try again");
-                                return;
-                            }
+                        if let Some(guard) = app_state.raise_amount.try_lock() {
+                            (*guard).clone()
+                        } else {
+                            ui.label("System busy, try again");
+                            return;
                         }
                     };
                     let mut raise_amount_str = raise_amount_str;
@@ -992,7 +891,7 @@ fn update_ui(
                         })) {
                             let _ = network_res.ui_tx.send(msg);
                             info!("Sent Raise action: ${}", raise_amount_clamped);
-                            if let Ok(mut guard) = app_state.raise_amount.try_lock() {
+                            if let Some(mut guard) = app_state.raise_amount.try_lock() {
                                 guard.clear();
                             }
                         }
@@ -1038,7 +937,7 @@ fn update_ui(
                 }
                 ui.add_space(10.0);
                 let mut pending_chat_text =
-                    if let Ok(guard) = app_state.game_state.pending_chat.try_lock() {
+                    if let Some(guard) = app_state.game_state.pending_chat.try_lock() {
                         guard.clone()
                     } else {
                         ui.label("System busy, try again");
@@ -1057,7 +956,7 @@ fn update_ui(
                     })) {
                         let _ = network_res.ui_tx.send(msg);
                         info!("Sent chat message");
-                        if let Ok(mut guard) = app_state.game_state.pending_chat.try_lock() {
+                        if let Some(mut guard) = app_state.game_state.pending_chat.try_lock() {
                             guard.clear();
                         }
                     }

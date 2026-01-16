@@ -1,5 +1,5 @@
+use parking_lot::Mutex;
 use std::collections::{HashMap, VecDeque};
-use std::sync::Mutex;
 
 pub use poker_protocol::{
     ActionRequiredUpdate, ChatMessage, GameStateUpdate, PlayerConnectedUpdate, PlayerUpdate,
