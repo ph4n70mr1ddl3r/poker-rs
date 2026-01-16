@@ -628,6 +628,12 @@ impl PokerGame {
                         .ok_or_else(|| ServerError::PlayerNotFound(player_id.clone()))?;
                     player.current_bet.saturating_add(all_in_amount)
                 };
+                let total_bet = new_bet;
+
+                if current_bet > 0 && total_bet < current_bet.saturating_add(self.min_raise) {
+                    return Err(ServerError::MinRaise(self.min_raise));
+                }
+
                 let new_pot = self.calculate_new_pot(all_in_amount).ok_or_else(|| {
                     ServerError::InvalidBet("Pot size exceeds maximum allowed".to_string())
                 })?;
@@ -966,7 +972,7 @@ impl PokerGame {
                 && ranks.contains(&14);
 
             if has_wheel {
-                return Some(HandEvaluation::straight_flush(6));
+                return Some(HandEvaluation::straight_flush(5));
             }
 
             return self
