@@ -552,7 +552,7 @@ impl ServerMessage {
                             "type".to_string(),
                             serde_json::Value::String("GameStateUpdate".to_string()),
                         );
-                        result.extend(obj.clone());
+                        result.extend(obj.iter().map(|(k, v)| (k.clone(), v.clone())));
                         Ok(serde_json::Value::Object(result))
                     },
                 )?,
@@ -578,7 +578,7 @@ impl ServerMessage {
                             "type".to_string(),
                             serde_json::Value::String("ActionRequired".to_string()),
                         );
-                        result.extend(obj.clone());
+                        result.extend(obj.iter().map(|(k, v)| (k.clone(), v.clone())));
                         Ok(serde_json::Value::Object(result))
                     },
                 )?,
@@ -593,7 +593,7 @@ impl ServerMessage {
                             "type".to_string(),
                             serde_json::Value::String("PlayerConnected".to_string()),
                         );
-                        result.extend(obj.clone());
+                        result.extend(obj.iter().map(|(k, v)| (k.clone(), v.clone())));
                         Ok(serde_json::Value::Object(result))
                     },
                 )?,
@@ -614,7 +614,7 @@ impl ServerMessage {
                             "type".to_string(),
                             serde_json::Value::String("Showdown".to_string()),
                         );
-                        result.extend(obj.clone());
+                        result.extend(obj.iter().map(|(k, v)| (k.clone(), v.clone())));
                         Ok(serde_json::Value::Object(result))
                     },
                 )?,

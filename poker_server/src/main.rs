@@ -461,7 +461,7 @@ fn generate_player_name(player_id: &str) -> String {
     let prefix = PLAYER_NAME_PREFIXES.choose(&mut rng).unwrap_or(&"Player");
     let suffix = PLAYER_NAME_SUFFIXES.choose(&mut rng).unwrap_or(&"");
 
-    format!("{}{}{}", prefix, suffix, &player_id[0..4].to_uppercase())
+    format!("{}{}{}", prefix, suffix, &player_id.chars().take(4).collect::<String>().to_uppercase())
 }
 
 fn sanitize_chat_message(text: &str) -> String {
