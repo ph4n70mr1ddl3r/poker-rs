@@ -395,7 +395,7 @@ impl PokerServer {
                         .map(|p| p.name.clone())
                         .unwrap_or_default(),
                     text,
-                    timestamp: chrono::Utc::now().timestamp_millis() as u64,
+                    timestamp: chrono::Utc::now().timestamp_millis().max(0) as u64,
                 };
                 if let Err(e) = self.tx.send(ServerMessage::Chat(chat_msg)) {
                     error!("Failed to send chat message to broadcast channel: {}", e);
