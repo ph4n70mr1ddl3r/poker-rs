@@ -415,16 +415,10 @@ impl PokerGame {
     /// # Arguments
     /// * `player` - The player raising
     /// * `total_bet` - The total bet amount after the raise
-    /// * `_current_bet` - Reserved for future use (e.g., min-raise calculations based on current bet)
     ///
     /// # Returns
     /// `Ok(())` if the raise is valid, or an error otherwise
-    fn validate_raise_amount(
-        &self,
-        player: &PlayerState,
-        total_bet: i32,
-        _current_bet: i32,
-    ) -> ServerResult<()> {
+    fn validate_raise_amount(&self, player: &PlayerState, total_bet: i32) -> ServerResult<()> {
         if total_bet <= player.current_bet {
             return Err(ServerError::InvalidRaise(
                 "Raise amount must increase the bet".to_string(),
@@ -583,7 +577,7 @@ impl PokerGame {
                         .players
                         .get(&player_id)
                         .ok_or_else(|| ServerError::PlayerNotFound(player_id.clone()))?;
-                    self.validate_raise_amount(player, total_bet, current_bet)?;
+                    self.validate_raise_amount(player, total_bet)?;
                 }
 
                 let actual_raise = {

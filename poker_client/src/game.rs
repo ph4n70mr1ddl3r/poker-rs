@@ -6,6 +6,8 @@ pub use poker_protocol::{
     ShowdownUpdate,
 };
 
+pub const HOLE_CARDS_COUNT: usize = 2;
+
 /// Client-side player representation for UI display.
 #[derive(Debug, Clone)]
 pub struct Player {

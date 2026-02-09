@@ -2,6 +2,7 @@ use bevy::prelude::*;
 use bevy_egui::{egui, EguiContexts, EguiPlugin};
 use futures::SinkExt;
 use futures::StreamExt;
+use log::{debug, error, info, warn};
 use parking_lot::Mutex;
 use std::env;
 use std::sync::mpsc;
@@ -18,6 +19,7 @@ pub const INITIAL_RECONNECT_DELAY_MS: u64 = 1000;
 pub const MAX_RECONNECT_DELAY_MS: u64 = 30000;
 pub const PING_INTERVAL_SECS: u64 = 30;
 pub const MAX_MESSAGE_SIZE: usize = 4096;
+pub const HOLE_CARDS_COUNT: usize = 2;
 
 mod game;
 mod network;
@@ -742,7 +744,7 @@ fn update_ui(
                     egui::Vec2::new(35.0, 49.0),
                 );
                 draw_card(ui.painter(), card1_rect, &villain.hole_cards[0]);
-                if villain.hole_cards.len() > 1 {
+                if villain.hole_cards.len() > HOLE_CARDS_COUNT - 1 {
                     draw_card(ui.painter(), card2_rect, &villain.hole_cards[1]);
                 }
             } else if villain.hole_cards.is_empty() {
@@ -797,7 +799,7 @@ fn update_ui(
                     egui::Vec2::new(40.0, 56.0),
                 );
                 draw_card(ui.painter(), card1_rect, &hero.hole_cards[0]);
-                if hero.hole_cards.len() > 1 {
+                if hero.hole_cards.len() > HOLE_CARDS_COUNT - 1 {
                     draw_card(ui.painter(), card2_rect, &hero.hole_cards[1]);
                 }
             }
