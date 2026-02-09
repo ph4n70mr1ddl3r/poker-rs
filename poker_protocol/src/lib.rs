@@ -12,7 +12,7 @@ use ring::rand::SecureRandom;
 
 pub use errors::{ConnectionError, ProtocolError, ServerError};
 pub use types::{
-    Card, GameStage, GameState, HandEvaluation, HandRank, Player, PlayerState, Rank, Street, Suit,
+    Card, GameStage, GameState, HandEvaluation, HandRank, PlayerState, Rank, Street, Suit,
 };
 pub type ServerResult<T> = std::result::Result<T, ServerError>;
 
@@ -28,7 +28,6 @@ pub struct NonceCache {
 }
 
 impl NonceCache {
-    /// Creates a new empty nonce cache.
     pub fn new() -> Self {
         Self {
             data: Arc::new(Mutex::new(HashMap::new())),

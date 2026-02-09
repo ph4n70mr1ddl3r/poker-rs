@@ -97,6 +97,7 @@ impl fmt::Display for Card {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[deprecated(note = "Use PlayerState instead")]
 pub struct Player {
     pub id: String,
     pub name: String,

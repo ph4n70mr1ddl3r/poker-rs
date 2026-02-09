@@ -241,7 +241,6 @@ impl PokerServer {
         for (player_id, sender) in players {
             let msg = Arc::clone(&msg_arc);
             let sender = sender.clone();
-            let player_id = player_id.clone();
             let sem = Arc::clone(&semaphore);
             tokio::spawn(async move {
                 let _permit = sem.acquire().await;
@@ -485,7 +484,6 @@ impl PokerServer {
         for (player_id, sender) in players {
             let msg = Arc::clone(&msg_arc);
             let sender = sender.clone();
-            let player_id = player_id.clone();
             let sem = Arc::clone(&semaphore);
             tokio::spawn(async move {
                 let _permit = sem.acquire().await;
@@ -512,7 +510,6 @@ impl PokerServer {
             .as_ref()
             .ok_or_else(|| ServerError::PlayerNotFound(player_id.to_string()))?;
 
-        let player_id = player_id.to_string();
         let sem = Arc::clone(&self.send_semaphore);
         let sender = sender.clone();
 
@@ -527,7 +524,7 @@ impl PokerServer {
     }
 
     /// Verifies a player's session token.
-    /// Used during reconnection to validate the player owns the session.
+    /// Used during reconnection to validate that player owns session.
     #[allow(dead_code)]
     pub fn verify_session(&self, player_id: &str, token: &str) -> bool {
         self.players

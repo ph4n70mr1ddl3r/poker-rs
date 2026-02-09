@@ -301,8 +301,9 @@ impl PokerGame {
             return;
         }
 
-        let player_id = self.current_player_id.clone();
-        let player_id = player_id
+        let player_id = self
+            .current_player_id
+            .clone()
             .or_else(|| active_player_ids.first().cloned())
             .unwrap_or_default();
 
@@ -735,7 +736,7 @@ impl PokerGame {
         }
 
         let mut players_vec: Vec<_> = players.iter().collect();
-        players_vec.sort_by_key(|p| p.current_bet);
+        players_vec.sort_by_key(|&p| p.current_bet);
 
         let min_bet = players_vec.first().map(|p| p.current_bet).unwrap_or(0);
 

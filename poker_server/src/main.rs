@@ -346,9 +346,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     let game_clone: Arc<Mutex<PokerGame>> = Arc::clone(&game);
-    let shutdown_clone = shutdown_state.should_shutdown.clone();
+    let shutdown_flag = shutdown_state.should_shutdown.clone();
     let inactivity_task = tokio::spawn(async move {
-        while !shutdown_clone.load(Ordering::Relaxed) {
+        while !shutdown_flag.load(Ordering::Relaxed) {
             tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
             let active_count = {
                 let g = game_clone.lock();
@@ -364,11 +364,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
-    let shutdown_flag = shutdown_state.should_shutdown.clone();
+    let shutdown_signal = shutdown_state.should_shutdown.clone();
 
     let _signal_task = tokio::spawn(async move {
         wait_for_shutdown_signal().await;
-        shutdown_flag.store(true, Ordering::Relaxed);
+        shutdown_signal.store(true, Ordering::Relaxed);
     });
 
     let mut active_connections: Vec<tokio::task::JoinHandle<()>> = Vec::new();
