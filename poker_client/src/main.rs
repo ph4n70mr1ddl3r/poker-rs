@@ -98,6 +98,7 @@ enum ConnectionState {
 #[derive(Resource)]
 struct NetworkResources {
     rx: Arc<Mutex<mpsc::Receiver<ClientNetworkMessage>>>,
+    tx: mpsc::Sender<ClientNetworkMessage>,
     ui_tx: mpsc::Sender<String>,
     runtime: Arc<Handle>,
     server_addr: String,
@@ -389,6 +390,7 @@ fn setup_network(mut commands: Commands, server_config: Res<ServerConfig>) {
 
     commands.insert_resource(NetworkResources {
         rx: rx_arc,
+        tx,
         ui_tx,
         runtime,
         server_addr,
@@ -498,6 +500,8 @@ fn trigger_reconnection(network_res: &Res<NetworkResources>, _commands: &mut Com
     let connection_state = network_res.connection_state.clone();
     let network_task = network_res.network_task.clone();
     let runtime = network_res.runtime.clone();
+    let tx_for_reconnect = network_res.tx.clone();
+    let ui_tx = network_res.ui_tx.clone();
 
     let attempt = {
         let state = reconnect_state.lock();
@@ -509,13 +513,9 @@ fn trigger_reconnection(network_res: &Res<NetworkResources>, _commands: &mut Com
         *state = ConnectionState::Reconnecting(attempt);
     }
 
-    let (tx, _) = mpsc::channel::<ClientNetworkMessage>();
-    let tx_clone = tx.clone();
-    let ui_tx = network_res.ui_tx.clone();
-
     let task = runtime.spawn(async move {
         let (ws_stream, connected_addr) =
-            match connect_with_retry(&server_addr, &tx_clone, &reconnect_state).await {
+            match connect_with_retry(&server_addr, &tx_for_reconnect, &reconnect_state).await {
                 Ok(result) => result,
                 Err(e) => {
                     error!("Reconnection failed: {}", e);
@@ -523,7 +523,7 @@ fn trigger_reconnection(network_res: &Res<NetworkResources>, _commands: &mut Com
                         let mut state = connection_state.lock();
                         *state = ConnectionState::Disconnected;
                     }
-                    let _ = tx_clone.send(ClientNetworkMessage::Error(format!(
+                    let _ = tx_for_reconnect.send(ClientNetworkMessage::Error(format!(
                         "Reconnection failed: {}",
                         e
                     )));
@@ -547,21 +547,20 @@ fn trigger_reconnection(network_res: &Res<NetworkResources>, _commands: &mut Com
             .await
         {
             error!("Failed to send connect message during reconnection: {}", e);
-            let _ = tx_clone.send(ClientNetworkMessage::Error(
+            let _ = tx_for_reconnect.send(ClientNetworkMessage::Error(
                 "Failed to send connect message".to_string(),
             ));
-            let _ = tx_clone.send(ClientNetworkMessage::Disconnected);
+            let _ = tx_for_reconnect.send(ClientNetworkMessage::Disconnected);
             return;
         }
 
-        let (_write_tx, mut write_rx) = tokio::sync::mpsc::channel::<String>(100);
+        let (write_tx, mut write_rx) = tokio::sync::mpsc::channel::<String>(100);
         let write_task = tokio::spawn(async move {
             while let Some(msg) = write_rx.recv().await {
                 let _ = write.send(Message::Text(msg.into())).await;
             }
         });
 
-        let tx_clone = tx.clone();
         let ui_tx_clone = ui_tx.clone();
         let read_task = tokio::spawn(async move {
             let mut read = read;
@@ -570,7 +569,7 @@ fn trigger_reconnection(network_res: &Res<NetworkResources>, _commands: &mut Com
                     Ok(Message::Text(text)) => {
                         if text.len() > MAX_MESSAGE_SIZE {
                             error!("Received message too large: {} bytes", text.len());
-                            let _ = tx_clone
+                            let _ = tx_for_reconnect
                                 .send(ClientNetworkMessage::Error("Message too large".to_string()));
                             break;
                         }
@@ -583,17 +582,17 @@ fn trigger_reconnection(network_res: &Res<NetworkResources>, _commands: &mut Com
                                 let _ = ui_tx_clone.send(pong_msg.to_string());
                             }
                             let client_msg = convert_message(server_msg);
-                            let _ = tx_clone.send(client_msg);
+                            let _ = tx_for_reconnect.send(client_msg);
                         }
                     }
                     Ok(Message::Close(_)) => {
-                        let _ = tx_clone.send(ClientNetworkMessage::Disconnected);
+                        let _ = tx_for_reconnect.send(ClientNetworkMessage::Disconnected);
                         break;
                     }
                     Err(e) => {
                         error!("WebSocket error during reconnection: {}", e);
-                        let _ = tx_clone.send(ClientNetworkMessage::Error(e.to_string()));
-                        let _ = tx_clone.send(ClientNetworkMessage::Disconnected);
+                        let _ = tx_for_reconnect.send(ClientNetworkMessage::Error(e.to_string()));
+                        let _ = tx_for_reconnect.send(ClientNetworkMessage::Disconnected);
                         break;
                     }
                     _ => {}
@@ -603,7 +602,7 @@ fn trigger_reconnection(network_res: &Res<NetworkResources>, _commands: &mut Com
 
         let _ = tokio::join!(read_task, write_task);
 
-        let _ = tx.send(ClientNetworkMessage::Disconnected);
+        let _ = tx_for_reconnect.send(ClientNetworkMessage::Disconnected);
         {
             let mut state = connection_state.lock();
             *state = ConnectionState::Disconnected;
@@ -613,7 +612,9 @@ fn trigger_reconnection(network_res: &Res<NetworkResources>, _commands: &mut Com
     {
         let mut task_guard = network_task.lock();
         if let Some(old_task) = task_guard.take() {
-            old_task.abort();
+            if let Err(e) = old_task.abort() {
+                debug!("Task abort error (may have already completed): {}", e);
+            }
         }
         *task_guard = Some(task);
     }
@@ -696,7 +697,7 @@ fn update_ui(
         let villain_pos = egui::pos2(table_center.x, villain_y);
 
         let mut villain_opt = None;
-        let mut hero_opt = None;
+        let hero_opt = None;
         for (id, player) in &app_state.game_state.players {
             if id == &app_state.game_state.my_id {
                 hero_opt = Some(player);

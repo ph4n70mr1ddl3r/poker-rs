@@ -126,7 +126,7 @@ impl HmacKey {
     /// # Returns
     /// `true` if the signature is valid, `false` otherwise
     pub fn verify(&self, message: &str, signature: &[u8]) -> bool {
-        if signature.len() != 32 {
+        if signature.len() != HMAC_SECRET_LEN {
             return false;
         }
         let key = ring::hmac::Key::new(ring::hmac::HMAC_SHA256, &self.0);
