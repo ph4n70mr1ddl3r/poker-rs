@@ -140,13 +140,11 @@ fn validate_action_amount(amount: i64, max_allowed: i32) -> Result<i32, String> 
     if amount <= 0 {
         return Err("Amount must be positive".to_string());
     }
-    if amount > max_allowed as i64 {
+    let amount = i32::try_from(amount).map_err(|_| "Amount too large".to_string())?;
+    if amount > max_allowed {
         return Err(format!("Amount exceeds maximum allowed: {}", max_allowed));
     }
-    if amount > i32::MAX as i64 {
-        return Err("Amount too large".to_string());
-    }
-    Ok(amount as i32)
+    Ok(amount)
 }
 
 /// Maximum multiplier for bet relative to pot size (prevents oversized bets)
@@ -515,20 +513,22 @@ impl MessageHandler {
             return;
         }
 
-        if let Some(action_str) = value["action"].as_str() {
-            if let Some(action) = poker_protocol::PlayerAction::parse_action(action_str) {
-                self.send_action(action);
-            } else if let Some(action) =
-                poker_protocol::PlayerAction::from_value(&value["action"], None)
-            {
-                self.send_action(action);
-            } else {
-                warn!("Unknown action: {}", action_str);
+        if let Some(action_value) = value.get("action") {
+            if let Some(action_str) = action_value.as_str() {
+                if let Some(action) = poker_protocol::PlayerAction::parse_action(action_str) {
+                    self.send_action(action);
+                } else if let Some(action) =
+                    poker_protocol::PlayerAction::from_value(&value["action"], None)
+                {
+                    self.send_action(action);
+                } else {
+                    warn!("Unknown action: {}", action_str);
+                }
+            } else if let Some(amount_value) = value["action"]["Bet"].as_i64() {
+                self.handle_bet(amount_value);
+            } else if let Some(amount_value) = value["action"]["Raise"].as_i64() {
+                self.handle_raise(amount_value);
             }
-        } else if let Some(amount_value) = value["action"]["Bet"].as_i64() {
-            self.handle_bet(amount_value);
-        } else if let Some(amount_value) = value["action"]["Raise"].as_i64() {
-            self.handle_raise(amount_value);
         }
     }
 
@@ -769,31 +769,31 @@ async fn handle_connection(
                     } else if let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) {
                         if let Some(type_obj) = value.get("type") {
                             if let Some(type_str) = type_obj.as_str() {
-                                match type_str {
-                                    "connect" => {
-                                        handler.handle_connect().await;
-                                    }
-                                    "action" => {
-                                        handler.handle_action(&value).await;
-                                    }
-                                    "chat" => {
-                                        handler.handle_chat(&value).await;
-                                    }
-                                    "sit_out" => {
-                                        handler.handle_sit_out().await;
-                                    }
-                                    "return" => {
-                                        handler.handle_return().await;
-                                    }
-                                    "ping" => {
-                                        if let Some(ts) = value["timestamp"].as_u64() {
-                                            handler.handle_ping(ts).await;
-                                        }
-                                    }
-                                    _ => {
-                                        warn!("Unknown message type: {}", type_str);
-                                    }
+                        match type_str {
+                            "Connect" => {
+                                handler.handle_connect().await;
+                            }
+                            "Action" => {
+                                handler.handle_action(&value).await;
+                            }
+                            "Chat" => {
+                                handler.handle_chat(&value).await;
+                            }
+                            "SitOut" => {
+                                handler.handle_sit_out().await;
+                            }
+                            "Return" => {
+                                handler.handle_return().await;
+                            }
+                            "Ping" => {
+                                if let Some(ts) = value["timestamp"].as_u64() {
+                                    handler.handle_ping(ts).await;
                                 }
+                            }
+                            _ => {
+                                warn!("Unknown message type: {}", type_str);
+                            }
+                        }
                             }
                         }
                     } else if let Ok(client_msg) = serde_json::from_str::<ClientMessage>(&text) {

@@ -62,6 +62,11 @@ impl NonceCache {
         data.insert(nonce, now);
         false
     }
+
+    pub fn clear(&self) {
+        let mut data = self.data.lock();
+        data.clear();
+    }
 }
 
 impl Default for NonceCache {
@@ -135,6 +140,26 @@ impl HmacKey {
 impl Default for HmacKey {
     fn default() -> Self {
         Self::new().expect("Failed to generate HMAC key - this is a fatal error")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_nonce_cache_duplicate() {
+        let cache = NonceCache::new();
+        assert!(!cache.is_duplicate(12345));
+        assert!(cache.is_duplicate(12345));
+    }
+
+    #[test]
+    fn test_nonce_cache_clear() {
+        let cache = NonceCache::new();
+        assert!(!cache.is_duplicate(12345));
+        cache.clear();
+        assert!(!cache.is_duplicate(12345));
     }
 }
 
@@ -307,10 +332,8 @@ impl PlayerAction {
     /// # Returns
     /// `Some(PlayerAction)` if valid, `None` otherwise
     pub fn parse_action(s: &str) -> Option<Self> {
-        let action_str = s
-            .strip_prefix('\"')
-            .and_then(|s| s.strip_suffix('\"').or(Some(s)));
-        match action_str.unwrap_or(s) {
+        let action_str = s.trim().trim_matches('"');
+        match action_str {
             "Fold" => Some(PlayerAction::Fold),
             "Check" => Some(PlayerAction::Check),
             "Call" => Some(PlayerAction::Call),

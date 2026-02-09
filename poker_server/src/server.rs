@@ -203,56 +203,56 @@ impl PokerServer {
     }
 
     fn broadcast_to_game_by_player(&self, exclude_player_id: &str, message: &str) {
-        let game_id = match self.player_sessions.get(exclude_player_id) {
-            Some(id) => id.clone(),
-            None => return,
+        let Some(game_id) = self.player_sessions.get(exclude_player_id) else {
+            return;
         };
 
-        let game = self.games.get(&game_id);
-        if let Some(game) = game {
-            let pg = game.lock();
+        let Some(game) = self.games.get(game_id) else {
+            return;
+        };
 
-            let players: Vec<(String, tokio::sync::mpsc::Sender<String>)> = {
-                pg.get_players()
-                    .keys()
-                    .filter(|player_id| player_id.as_str() != exclude_player_id)
-                    .filter(|player_id| {
-                        self.players
-                            .get(player_id.as_str())
-                            .map(|p| p.connected)
-                            .unwrap_or(false)
-                    })
-                    .filter_map(|player_id| {
-                        self.players
-                            .get(player_id.as_str())
-                            .and_then(|p| p.ws_sender.as_ref())
-                            .map(|sender| (player_id.clone(), sender.clone()))
-                    })
-                    .collect()
-            };
+        let pg = game.lock();
 
-            drop(pg);
+        let players: Vec<(String, tokio::sync::mpsc::Sender<String>)> = {
+            pg.get_players()
+                .keys()
+                .filter(|player_id| player_id.as_str() != exclude_player_id)
+                .filter(|player_id| {
+                    self.players
+                        .get(player_id.as_str())
+                        .map(|p| p.connected)
+                        .unwrap_or(false)
+                })
+                .filter_map(|player_id| {
+                    self.players
+                        .get(player_id.as_str())
+                        .and_then(|p| p.ws_sender.as_ref())
+                        .map(|sender| (player_id.clone(), sender.clone()))
+                })
+                .collect()
+        };
 
-            if players.is_empty() {
-                return;
-            }
+        drop(pg);
 
-            let timeout_duration = Duration::from_millis(BROADCAST_SEND_TIMEOUT_MS);
-            let msg_arc = Arc::new(message.to_string());
-            let semaphore = Arc::clone(&self.broadcast_semaphore);
+        if players.is_empty() {
+            return;
+        }
 
-            for (player_id, sender) in players {
-                let msg = Arc::clone(&msg_arc);
-                let sender = sender.clone();
-                let player_id = player_id.clone();
-                let sem = Arc::clone(&semaphore);
-                tokio::spawn(async move {
-                    let _permit = sem.acquire().await;
-                    if let Err(e) = timeout(timeout_duration, sender.send((*msg).clone())).await {
-                        error!("Timeout sending to player {}: {}", player_id, e);
-                    }
-                });
-            }
+        let timeout_duration = Duration::from_millis(BROADCAST_SEND_TIMEOUT_MS);
+        let msg_arc = Arc::new(message.to_string());
+        let semaphore = Arc::clone(&self.broadcast_semaphore);
+
+        for (player_id, sender) in players {
+            let msg = Arc::clone(&msg_arc);
+            let sender = sender.clone();
+            let player_id = player_id.clone();
+            let sem = Arc::clone(&semaphore);
+            tokio::spawn(async move {
+                let _permit = sem.acquire().await;
+                if let Err(e) = timeout(timeout_duration, sender.send((*msg).clone())).await {
+                    error!("Timeout sending to player {}: {}", player_id, e);
+                }
+            });
         }
     }
 
@@ -454,48 +454,49 @@ impl PokerServer {
             }
         };
 
-        let game = self.games.get(game_id);
-        if let Some(game) = game {
-            let pg = game.lock();
+        let Some(game) = self.games.get(game_id) else {
+            return;
+        };
 
-            let players: Vec<(String, tokio::sync::mpsc::Sender<String>)> = {
-                pg.get_players()
-                    .keys()
-                    .filter(|player_id| {
-                        self.players
-                            .get(player_id.as_str())
-                            .map(|p| p.connected)
-                            .unwrap_or(false)
-                    })
-                    .filter_map(|player_id| {
-                        self.players
-                            .get(player_id.as_str())
-                            .and_then(|p| p.ws_sender.as_ref())
-                            .map(|sender| (player_id.clone(), sender.clone()))
-                    })
-                    .collect()
-            };
+        let pg = game.lock();
 
-            if players.is_empty() {
-                return;
-            }
+        let players: Vec<(String, tokio::sync::mpsc::Sender<String>)> = {
+            pg.get_players()
+                .keys()
+                .filter(|player_id| {
+                    self.players
+                        .get(player_id.as_str())
+                        .map(|p| p.connected)
+                        .unwrap_or(false)
+                })
+                .filter_map(|player_id| {
+                    self.players
+                        .get(player_id.as_str())
+                        .and_then(|p| p.ws_sender.as_ref())
+                        .map(|sender| (player_id.clone(), sender.clone()))
+                })
+                .collect()
+        };
 
-            let timeout_duration = Duration::from_millis(BROADCAST_SEND_TIMEOUT_MS);
-            let msg_arc = Arc::new(json);
-            let semaphore = Arc::clone(&self.broadcast_semaphore);
+        if players.is_empty() {
+            return;
+        }
 
-            for (player_id, sender) in players {
-                let msg = Arc::clone(&msg_arc);
-                let sender = sender.clone();
-                let player_id = player_id.clone();
-                let sem = Arc::clone(&semaphore);
-                tokio::spawn(async move {
-                    let _permit = sem.acquire().await;
-                    if let Err(e) = timeout(timeout_duration, sender.send((*msg).clone())).await {
-                        error!("Timeout sending to player {}: {}", player_id, e);
-                    }
-                });
-            }
+        let timeout_duration = Duration::from_millis(BROADCAST_SEND_TIMEOUT_MS);
+        let msg_arc = Arc::new(json);
+        let semaphore = Arc::clone(&self.broadcast_semaphore);
+
+        for (player_id, sender) in players {
+            let msg = Arc::clone(&msg_arc);
+            let sender = sender.clone();
+            let player_id = player_id.clone();
+            let sem = Arc::clone(&semaphore);
+            tokio::spawn(async move {
+                let _permit = sem.acquire().await;
+                if let Err(e) = timeout(timeout_duration, sender.send((*msg).clone())).await {
+                    error!("Timeout sending to player {}: {}", player_id, e);
+                }
+            });
         }
     }
 

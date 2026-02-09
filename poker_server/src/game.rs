@@ -212,24 +212,11 @@ impl PokerGame {
     }
 
     fn deal_hole_cards(&mut self) {
-        let player_ids: Vec<String> = self.players.keys().cloned().collect();
-
         for _ in 0..2 {
-            for player_id in &player_ids {
-                let card = {
-                    if let Some(player) = self.players.get_mut(player_id) {
-                        if !player.is_sitting_out && player.chips > 0 {
-                            self.deal_card()
-                        } else {
-                            None
-                        }
-                    } else {
-                        None
-                    }
-                };
-                if let Some(c) = card {
-                    if let Some(player) = self.players.get_mut(player_id) {
-                        player.hole_cards.push(c);
+            for player in self.players.values_mut() {
+                if !player.is_sitting_out && player.chips > 0 {
+                    if let Some(card) = self.deal_card() {
+                        player.hole_cards.push(card);
                     }
                 }
             }
@@ -498,21 +485,13 @@ impl PokerGame {
                 }
             }
             PlayerAction::Call => {
-                let player_id = player_id.to_string();
-                let player_chips = {
-                    let player = self
-                        .players
-                        .get(&player_id)
-                        .ok_or_else(|| ServerError::PlayerNotFound(player_id.clone()))?;
-                    player.chips
-                };
-                let player_current_bet = {
-                    let player = self
-                        .players
-                        .get(&player_id)
-                        .ok_or_else(|| ServerError::PlayerNotFound(player_id.clone()))?;
-                    player.current_bet
-                };
+                let player = self
+                    .players
+                    .get_mut(player_id)
+                    .ok_or_else(|| ServerError::PlayerNotFound(player_id.to_string()))?;
+
+                let player_current_bet = player.current_bet;
+                let player_chips = player.chips;
 
                 let call_amount = current_bet
                     .saturating_sub(player_current_bet)
@@ -525,10 +504,6 @@ impl PokerGame {
                     self.pot = new_pot;
                 }
 
-                let player = self
-                    .players
-                    .get_mut(&player_id)
-                    .ok_or(ServerError::PlayerNotFound(player_id))?;
                 player.chips = player.chips.saturating_sub(call_amount);
                 player.current_bet = player.current_bet.saturating_add(call_amount);
                 player.has_acted = true;
@@ -538,16 +513,15 @@ impl PokerGame {
                 }
             }
             PlayerAction::Bet(amount) => {
-                {
-                    let player = self
-                        .players
-                        .get(player_id)
-                        .ok_or_else(|| ServerError::PlayerNotFound(player_id.to_string()))?;
-                    self.validate_bet_amount(player, amount, current_bet, pot)?;
+                let player = self
+                    .players
+                    .get(player_id)
+                    .ok_or_else(|| ServerError::PlayerNotFound(player_id.to_string()))?;
 
-                    if current_bet > 0 && amount < self.min_raise {
-                        return Err(ServerError::MinRaise(self.min_raise));
-                    }
+                self.validate_bet_amount(player, amount, current_bet, pot)?;
+
+                if current_bet > 0 && amount < self.min_raise {
+                    return Err(ServerError::MinRaise(self.min_raise));
                 }
 
                 let bet_amount = amount;
@@ -570,23 +544,16 @@ impl PokerGame {
                 }
             }
             PlayerAction::Raise(amount) => {
-                let player_id = player_id.to_string();
                 let total_bet = current_bet.saturating_add(amount);
-                {
-                    let player = self
-                        .players
-                        .get(&player_id)
-                        .ok_or_else(|| ServerError::PlayerNotFound(player_id.clone()))?;
-                    self.validate_raise_amount(player, total_bet)?;
-                }
 
-                let actual_raise = {
-                    let player = self
-                        .players
-                        .get(&player_id)
-                        .ok_or_else(|| ServerError::PlayerNotFound(player_id.clone()))?;
-                    total_bet.saturating_sub(player.current_bet)
-                };
+                let player = self
+                    .players
+                    .get(player_id)
+                    .ok_or_else(|| ServerError::PlayerNotFound(player_id.to_string()))?;
+
+                self.validate_raise_amount(player, total_bet)?;
+
+                let actual_raise = total_bet.saturating_sub(player.current_bet);
 
                 let new_pot = self.calculate_new_pot(actual_raise).ok_or_else(|| {
                     ServerError::InvalidBet("Pot size exceeds maximum allowed".to_string())
@@ -594,8 +561,8 @@ impl PokerGame {
 
                 let player = self
                     .players
-                    .get_mut(&player_id)
-                    .ok_or(ServerError::PlayerNotFound(player_id))?;
+                    .get_mut(player_id)
+                    .ok_or_else(|| ServerError::PlayerNotFound(player_id.to_string()))?;
                 player.chips = player.chips.saturating_sub(actual_raise);
                 player.current_bet = player.current_bet.saturating_add(actual_raise);
                 self.pot = new_pot;
@@ -607,21 +574,13 @@ impl PokerGame {
                 }
             }
             PlayerAction::AllIn => {
-                let player_id = player_id.to_string();
-                let all_in_amount = {
-                    let player = self
-                        .players
-                        .get(&player_id)
-                        .ok_or_else(|| ServerError::PlayerNotFound(player_id.clone()))?;
-                    player.chips
-                };
-                let new_bet = {
-                    let player = self
-                        .players
-                        .get(&player_id)
-                        .ok_or_else(|| ServerError::PlayerNotFound(player_id.clone()))?;
-                    player.current_bet.saturating_add(all_in_amount)
-                };
+                let player = self
+                    .players
+                    .get(player_id)
+                    .ok_or_else(|| ServerError::PlayerNotFound(player_id.to_string()))?;
+
+                let all_in_amount = player.chips;
+                let new_bet = player.current_bet.saturating_add(all_in_amount);
                 let total_bet = new_bet;
 
                 if current_bet > 0 && total_bet < current_bet.saturating_add(self.min_raise) {
@@ -634,8 +593,8 @@ impl PokerGame {
 
                 let player = self
                     .players
-                    .get_mut(&player_id)
-                    .ok_or(ServerError::PlayerNotFound(player_id))?;
+                    .get_mut(player_id)
+                    .ok_or_else(|| ServerError::PlayerNotFound(player_id.to_string()))?;
                 player.chips = 0;
                 player.current_bet = new_bet;
                 self.pot = new_pot;
@@ -976,53 +935,43 @@ impl PokerGame {
     }
 
     fn check_four_of_a_kind(&self, cards: &[Card]) -> Option<HandEvaluation> {
-        let ranks: Vec<_> = cards.iter().map(|c| c.rank as u8).collect();
-        let mut rank_counts: Vec<(u8, usize)> = (2..=14)
-            .map(|r| (r, ranks.iter().filter(|&&x| x == r).count()))
-            .collect();
-        rank_counts.sort_by_key(|&(_, count)| std::cmp::Reverse(count));
+        let mut rank_counts: HashMap<u8, usize> = HashMap::new();
+        for card in cards {
+            *rank_counts.entry(card.rank as u8).or_insert(0) += 1;
+        }
 
-        if let Some((rank, 4)) = rank_counts.first() {
-            return Some(HandEvaluation::four_of_a_kind(cards, *rank));
+        for (rank, &count) in &rank_counts {
+            if count == 4 {
+                return Some(HandEvaluation::four_of_a_kind(cards, *rank));
+            }
         }
         None
     }
 
     fn check_full_house(&self, cards: &[Card]) -> Option<HandEvaluation> {
-        let ranks: Vec<_> = cards.iter().map(|c| c.rank as u8).collect();
-        let mut rank_counts: Vec<(u8, usize)> = (2..=14)
-            .map(|r| (r, ranks.iter().filter(|&&x| x == r).count()))
-            .collect();
-        rank_counts.sort_by_key(|&(_, count)| std::cmp::Reverse(count));
-
-        let three_kind_cards: Vec<(u8, usize)> = rank_counts
-            .iter()
-            .filter(|&&(_, count)| count >= 3)
-            .cloned()
-            .collect();
-        let pair_cards: Vec<(u8, usize)> = rank_counts
-            .iter()
-            .filter(|&&(_, count)| count >= 2)
-            .cloned()
-            .collect();
-
-        if three_kind_cards.len() >= 2 {
-            let three_rank = three_kind_cards[0].0;
-            let pair_rank = three_kind_cards[1].0;
-            return Some(HandEvaluation::full_house(three_rank, pair_rank));
+        let mut rank_counts: HashMap<u8, usize> = HashMap::new();
+        for card in cards {
+            *rank_counts.entry(card.rank as u8).or_insert(0) += 1;
         }
 
-        if let Some((three_rank, _three_count)) = three_kind_cards.first() {
-            let three_rank_val = *three_rank;
+        let mut three_of_kind: Option<u8> = None;
+        let mut pairs: Vec<u8> = Vec::new();
 
-            let pair_for_full_house: Vec<(u8, usize)> = pair_cards
-                .iter()
-                .filter(|&&(rank, _)| rank != three_rank_val)
-                .cloned()
-                .collect();
+        for (&rank, &count) in &rank_counts {
+            if count >= 3 {
+                if three_of_kind.is_none() {
+                    three_of_kind = Some(rank);
+                } else {
+                    pairs.push(rank);
+                }
+            } else if count >= 2 {
+                pairs.push(rank);
+            }
+        }
 
-            if let Some(&(pair_rank, _)) = pair_for_full_house.first() {
-                return Some(HandEvaluation::full_house(three_rank_val, pair_rank));
+        if let Some(three_rank) = three_of_kind {
+            if let Some(pair_rank) = pairs.into_iter().find(|&r| r != three_rank) {
+                return Some(HandEvaluation::full_house(three_rank, pair_rank));
             }
         }
 
@@ -1099,47 +1048,48 @@ impl PokerGame {
     }
 
     fn check_three_of_a_kind(&self, cards: &[Card]) -> Option<HandEvaluation> {
-        let ranks: Vec<_> = cards.iter().map(|c| c.rank as u8).collect();
-        let mut rank_counts: Vec<(u8, usize)> = (2..=14)
-            .map(|r| (r, ranks.iter().filter(|&&x| x == r).count()))
-            .collect();
-        rank_counts.sort_by_key(|&(_, count)| std::cmp::Reverse(count));
+        let mut rank_counts: HashMap<u8, usize> = HashMap::new();
+        for card in cards {
+            *rank_counts.entry(card.rank as u8).or_insert(0) += 1;
+        }
 
-        if let Some((rank, 3)) = rank_counts.first() {
-            return Some(HandEvaluation::three_of_a_kind(cards, *rank));
+        for (rank, &count) in &rank_counts {
+            if count >= 3 {
+                return Some(HandEvaluation::three_of_a_kind(cards, *rank));
+            }
         }
         None
     }
 
     fn check_two_pair(&self, cards: &[Card]) -> Option<HandEvaluation> {
-        let ranks: Vec<_> = cards.iter().map(|c| c.rank as u8).collect();
-        let mut rank_counts: Vec<(u8, usize)> = (2..=14)
-            .map(|r| (r, ranks.iter().filter(|&&x| x == r).count()))
-            .collect();
-        rank_counts.sort_by_key(|&(_, count)| std::cmp::Reverse(count));
+        let mut rank_counts: HashMap<u8, usize> = HashMap::new();
+        for card in cards {
+            *rank_counts.entry(card.rank as u8).or_insert(0) += 1;
+        }
 
-        let pairs: Vec<_> = rank_counts
+        let mut pairs: Vec<u8> = rank_counts
             .iter()
-            .filter(|&&(_, count)| count >= 2)
+            .filter(|(_, &count)| count >= 2)
+            .map(|(&rank, _)| rank)
             .collect();
 
         if pairs.len() >= 2 {
-            let high_pair = pairs[0].0;
-            let low_pair = pairs[1].0;
-            return Some(HandEvaluation::two_pair(cards, high_pair, low_pair));
+            pairs.sort_by(|a, b| b.cmp(a));
+            return Some(HandEvaluation::two_pair(cards, pairs[0], pairs[1]));
         }
         None
     }
 
     fn check_pair(&self, cards: &[Card]) -> Option<HandEvaluation> {
-        let ranks: Vec<_> = cards.iter().map(|c| c.rank as u8).collect();
-        let mut rank_counts: Vec<(u8, usize)> = (2..=14)
-            .map(|r| (r, ranks.iter().filter(|&&x| x == r).count()))
-            .collect();
-        rank_counts.sort_by_key(|&(_, count)| std::cmp::Reverse(count));
+        let mut rank_counts: HashMap<u8, usize> = HashMap::new();
+        for card in cards {
+            *rank_counts.entry(card.rank as u8).or_insert(0) += 1;
+        }
 
-        if let Some((rank, 2)) = rank_counts.first() {
-            return Some(HandEvaluation::pair(cards, *rank));
+        for (rank, &count) in &rank_counts {
+            if count >= 2 {
+                return Some(HandEvaluation::pair(cards, *rank));
+            }
         }
         None
     }
@@ -1148,21 +1098,20 @@ impl PokerGame {
         self.game_stage = GameStage::HandComplete;
         self.broadcast_game_state();
 
-        let active_player_ids: Vec<String> = self
+        let active_player_ids: Vec<&str> = self
             .players
             .values()
             .filter(|p| p.chips > 0 && !p.is_sitting_out)
-            .map(|p| p.id.clone())
+            .map(|p| p.id.as_str())
             .collect();
 
         if !active_player_ids.is_empty() {
             let current_dealer = active_player_ids
                 .get(self.dealer_position % active_player_ids.len())
-                .or(active_player_ids.first())
-                .cloned();
+                .or(active_player_ids.first());
 
             if let Some(current) = current_dealer {
-                if let Some(current_idx) = active_player_ids.iter().position(|id| id == &current) {
+                if let Some(current_idx) = active_player_ids.iter().position(|id| *id == *current) {
                     let next_idx = (current_idx + 1) % active_player_ids.len();
                     self.dealer_position = next_idx;
                 }
