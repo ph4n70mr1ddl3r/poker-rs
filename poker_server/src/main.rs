@@ -43,7 +43,7 @@ impl TokenBucketRateLimiter {
         }
     }
 
-    pub async fn allow(&self) -> bool {
+    pub fn allow(&self) -> bool {
         let now_ms = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |d| d.as_millis() as u64);
@@ -106,8 +106,8 @@ impl RateLimiter {
         }
     }
 
-    async fn allow(&self) -> bool {
-        self.inner.allow().await
+    fn allow(&self) -> bool {
+        self.inner.allow()
     }
 }
 
@@ -131,8 +131,8 @@ impl ChatRateLimiter {
         }
     }
 
-    async fn allow(&self) -> bool {
-        self.inner.allow().await
+    fn allow(&self) -> bool {
+        self.inner.allow()
     }
 }
 
@@ -150,21 +150,21 @@ fn validate_action_amount(amount: i64, max_allowed: i32) -> Result<i32, String> 
 /// Maximum multiplier for bet relative to pot size (prevents oversized bets)
 pub const MAX_BET_MULTIPLIER: i32 = 10;
 /// Maximum allowed WebSocket message size in bytes (4KB)
-const MAX_MESSAGE_SIZE: usize = 4096;
+pub const MAX_MESSAGE_SIZE: usize = 4096;
 /// Maximum chips a player can have at any time
-const MAX_PLAYER_CHIPS: i32 = 1000000;
+pub const MAX_PLAYER_CHIPS: i32 = 1000000;
 /// Starting chips for new players
-const STARTING_CHIPS: i32 = 1000;
+pub const STARTING_CHIPS: i32 = 1000;
 /// Capacity for tokio mpsc channels used for message passing
 const CHANNEL_CAPACITY: usize = 100;
 /// Timeout for player inactivity in milliseconds (10 minutes)
-const INACTIVITY_TIMEOUT_MS: u64 = 600000;
-/// Maximum total concurrent connections to the server
-const MAX_CONNECTIONS: usize = 100;
+pub const INACTIVITY_TIMEOUT_MS: u64 = 600000;
+/// Maximum total concurrent connections to server
+pub const MAX_CONNECTIONS: usize = 100;
 /// Maximum concurrent connections from a single IP address
-const MAX_CONNECTIONS_PER_IP: usize = 5;
+pub const MAX_CONNECTIONS_PER_IP: usize = 5;
 /// Session token expiry time in hours
-const SESSION_TOKEN_EXPIRY_HOURS: u64 = 24;
+pub const SESSION_TOKEN_EXPIRY_HOURS: u64 = 24;
 /// Maximum bet allowed per hand
 pub const MAX_BET_PER_HAND: i32 = 100000;
 
@@ -508,7 +508,7 @@ impl MessageHandler {
     }
 
     async fn handle_action(&self, value: &serde_json::Value) {
-        if !self.rate_limiter.allow().await {
+        if !self.rate_limiter.allow() {
             warn!("Player {} action rate limited", self.player_id);
             return;
         }
@@ -572,7 +572,7 @@ impl MessageHandler {
     }
 
     async fn handle_chat(&self, value: &serde_json::Value) {
-        if !self.chat_rate_limiter.allow().await {
+        if !self.chat_rate_limiter.allow() {
             warn!("Player {} chat rate limited", self.player_id);
             self.send_error("Chat rate limit exceeded. Please wait before sending more messages.");
             return;
@@ -704,7 +704,7 @@ async fn handle_connection(
                 Ok(Message::Text(text)) => {
                     last_activity = Instant::now();
 
-                    if !rate_limiter_clone.allow().await {
+                    if !rate_limiter_clone.allow() {
                         warn!("Player {} exceeded rate limit", player_id);
                         let error_msg = ServerMessage::Error("Rate limit exceeded".to_string());
                         if let Ok(json) = serde_json::to_string(&error_msg) {
@@ -769,31 +769,31 @@ async fn handle_connection(
                     } else if let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) {
                         if let Some(type_obj) = value.get("type") {
                             if let Some(type_str) = type_obj.as_str() {
-                        match type_str {
-                            "Connect" => {
-                                handler.handle_connect().await;
-                            }
-                            "Action" => {
-                                handler.handle_action(&value).await;
-                            }
-                            "Chat" => {
-                                handler.handle_chat(&value).await;
-                            }
-                            "SitOut" => {
-                                handler.handle_sit_out().await;
-                            }
-                            "Return" => {
-                                handler.handle_return().await;
-                            }
-                            "Ping" => {
-                                if let Some(ts) = value["timestamp"].as_u64() {
-                                    handler.handle_ping(ts).await;
+                                match type_str {
+                                    "Connect" => {
+                                        handler.handle_connect().await;
+                                    }
+                                    "Action" => {
+                                        handler.handle_action(&value).await;
+                                    }
+                                    "Chat" => {
+                                        handler.handle_chat(&value).await;
+                                    }
+                                    "SitOut" => {
+                                        handler.handle_sit_out().await;
+                                    }
+                                    "Return" => {
+                                        handler.handle_return().await;
+                                    }
+                                    "Ping" => {
+                                        if let Some(ts) = value["timestamp"].as_u64() {
+                                            handler.handle_ping(ts).await;
+                                        }
+                                    }
+                                    _ => {
+                                        warn!("Unknown message type: {}", type_str);
+                                    }
                                 }
-                            }
-                            _ => {
-                                warn!("Unknown message type: {}", type_str);
-                            }
-                        }
                             }
                         }
                     } else if let Ok(client_msg) = serde_json::from_str::<ClientMessage>(&text) {
@@ -829,35 +829,35 @@ async fn handle_connection(
 mod tests {
     use super::*;
 
-    #[tokio::test]
-    async fn test_rate_limiter_allow() {
+    #[test]
+    fn test_rate_limiter_allow() {
         let limiter = RateLimiter::new();
         for _ in 0..100 {
-            assert!(limiter.allow().await);
+            assert!(limiter.allow());
         }
-        assert!(!limiter.allow().await);
+        assert!(!limiter.allow());
     }
 
     #[tokio::test]
     async fn test_rate_limiter_refill() {
         let limiter = RateLimiter::new();
         for _ in 0..100 {
-            assert!(limiter.allow().await);
+            assert!(limiter.allow());
         }
-        assert!(!limiter.allow().await);
+        assert!(!limiter.allow());
 
         tokio::time::sleep(tokio::time::Duration::from_millis(1500)).await;
 
-        assert!(limiter.allow().await);
+        assert!(limiter.allow());
     }
 
-    #[tokio::test]
-    async fn test_chat_rate_limiter_allow() {
+    #[test]
+    fn test_chat_rate_limiter_allow() {
         let limiter = ChatRateLimiter::new();
         for _ in 0..5 {
-            assert!(limiter.allow().await);
+            assert!(limiter.allow());
         }
-        assert!(!limiter.allow().await);
+        assert!(!limiter.allow());
     }
 
     #[test]

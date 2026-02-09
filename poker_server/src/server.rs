@@ -14,10 +14,6 @@ use uuid::Uuid;
 
 use crate::game::PokerGame;
 
-/// Maximum total concurrent connections to the server
-pub const MAX_CONNECTIONS: usize = 100;
-/// Maximum concurrent connections from a single IP address
-pub const MAX_CONNECTIONS_PER_IP: usize = 5;
 const BROADCAST_SEND_TIMEOUT_MS: u64 = 5000;
 const MAX_BROADCAST_TASKS: usize = 50;
 const MAX_SEND_TASKS: usize = 100;
@@ -583,7 +579,7 @@ mod tests {
     fn test_per_ip_connection_limits() {
         let mut server = PokerServer::new();
 
-        for _i in 0..MAX_CONNECTIONS_PER_IP {
+        for _ in 0..MAX_CONNECTIONS_PER_IP {
             assert!(server.can_accept_connection("127.0.0.1"));
             server.register_connection("127.0.0.1");
         }
