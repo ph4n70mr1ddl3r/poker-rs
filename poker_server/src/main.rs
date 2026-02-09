@@ -138,11 +138,15 @@ impl ChatRateLimiter {
 
 fn validate_action_amount(amount: i64, max_allowed: i32) -> Result<i32, String> {
     if amount <= 0 {
-        return Err("Amount must be positive".to_string());
+        return Err("Action amount must be positive".to_string());
     }
-    let amount = i32::try_from(amount).map_err(|_| "Amount too large".to_string())?;
+    let amount =
+        i32::try_from(amount).map_err(|_| format!("Amount {} exceeds i32::MAX", amount))?;
     if amount > max_allowed {
-        return Err(format!("Amount exceeds maximum allowed: {}", max_allowed));
+        return Err(format!(
+            "Amount {} exceeds maximum allowed: {}",
+            amount, max_allowed
+        ));
     }
     Ok(amount)
 }
@@ -459,7 +463,12 @@ fn generate_player_name(player_id: &str) -> String {
     let prefix = PLAYER_NAME_PREFIXES.choose(&mut rng).unwrap_or(&"Player");
     let suffix = PLAYER_NAME_SUFFIXES.choose(&mut rng).unwrap_or(&"");
 
-    format!("{}{}{}", prefix, suffix, &player_id.chars().take(4).collect::<String>().to_uppercase())
+    format!(
+        "{}{}{}",
+        prefix,
+        suffix,
+        &player_id.chars().take(4).collect::<String>().to_uppercase()
+    )
 }
 
 fn sanitize_chat_message(text: &str) -> String {

@@ -96,63 +96,6 @@ impl fmt::Display for Card {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[deprecated(note = "Use PlayerState instead")]
-pub struct Player {
-    pub id: String,
-    pub name: String,
-    pub chips: i32,
-    pub current_bet: i32,
-    pub has_acted: bool,
-    pub is_all_in: bool,
-    pub is_folded: bool,
-    pub is_sitting_out: bool,
-    pub hole_cards: Vec<String>,
-}
-
-impl Player {
-    pub fn new(id: String, name: String, chips: i32) -> Self {
-        Self {
-            id,
-            name,
-            chips,
-            current_bet: 0,
-            has_acted: false,
-            is_all_in: false,
-            is_folded: false,
-            is_sitting_out: false,
-            hole_cards: Vec::new(),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct GameState {
-    pub players: Vec<Player>,
-    pub community_cards: Vec<String>,
-    pub pot: i32,
-    pub current_street: String,
-    pub hand_number: i32,
-}
-
-impl Default for GameState {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl GameState {
-    pub fn new() -> Self {
-        Self {
-            players: Vec::new(),
-            community_cards: Vec::new(),
-            pot: 0,
-            current_street: String::new(),
-            hand_number: 0,
-        }
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Street {
     Preflop,
@@ -457,7 +400,7 @@ impl HandEvaluation {
                 .unwrap_or_else(|| "Unknown".to_string())
         };
 
-        let primary_rank = if is_wheel { 1 } else { straight_high as i32 };
+        let primary_rank = if is_wheel { 5 } else { straight_high as i32 };
 
         Self {
             rank: HandRank::StraightFlush,

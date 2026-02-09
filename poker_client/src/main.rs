@@ -1049,10 +1049,10 @@ fn convert_message(msg: crate::network::NetworkMessage) -> ClientNetworkMessage 
         crate::network::NetworkMessage::Chat(msg) => ClientNetworkMessage::Chat(msg),
         crate::network::NetworkMessage::Error(msg) => ClientNetworkMessage::Error(msg),
         crate::network::NetworkMessage::Ping(_) => {
-            ClientNetworkMessage::Error("Unexpected Ping".to_string())
+            ClientNetworkMessage::Error("Ping message should not reach convert_message".to_string())
         }
         crate::network::NetworkMessage::Pong(_) => {
-            ClientNetworkMessage::Error("Unexpected Pong".to_string())
+            ClientNetworkMessage::Error("Pong message should not reach convert_message".to_string())
         }
     }
 }

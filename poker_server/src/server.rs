@@ -17,6 +17,8 @@ use crate::game::PokerGame;
 const BROADCAST_SEND_TIMEOUT_MS: u64 = 5000;
 const MAX_BROADCAST_TASKS: usize = 50;
 const MAX_SEND_TASKS: usize = 100;
+pub const MAX_CONNECTIONS: usize = 100;
+pub const MAX_CONNECTIONS_PER_IP: usize = 5;
 
 /// Type alias for player identifiers.
 pub type PlayerId = String;
@@ -200,10 +202,18 @@ impl PokerServer {
 
     fn broadcast_to_game_by_player(&self, exclude_player_id: &str, message: &str) {
         let Some(game_id) = self.player_sessions.get(exclude_player_id) else {
+            debug!(
+                "No game found for player {} (not in any game)",
+                exclude_player_id
+            );
             return;
         };
 
         let Some(game) = self.games.get(game_id) else {
+            error!(
+                "Game {} not found for player {}",
+                game_id, exclude_player_id
+            );
             return;
         };
 
@@ -231,6 +241,10 @@ impl PokerServer {
         drop(pg);
 
         if players.is_empty() {
+            debug!(
+                "No other connected players to broadcast to in game {}",
+                game_id
+            );
             return;
         }
 
@@ -443,6 +457,7 @@ impl PokerServer {
                     Ok(fallback) => fallback,
                     Err(e2) => {
                         error!("Failed to serialize message to fallback format: {}", e2);
+                        error!("Message was: {:?}", message);
                         return;
                     }
                 }
@@ -450,6 +465,7 @@ impl PokerServer {
         };
 
         let Some(game) = self.games.get(game_id) else {
+            error!("Game {} not found for broadcast", game_id);
             return;
         };
 
@@ -474,6 +490,7 @@ impl PokerServer {
         };
 
         if players.is_empty() {
+            debug!("No connected players to broadcast to in game {}", game_id);
             return;
         }
 
