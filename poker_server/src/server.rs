@@ -82,7 +82,6 @@ impl PokerServer {
     }
 
     /// Sets the session token expiry duration in hours.
-    #[allow(dead_code)]
     pub fn set_session_expiry_hours(&mut self, hours: u64) {
         self.session_expiry_hours = hours;
     }
@@ -225,13 +224,13 @@ impl PokerServer {
                 .filter(|player_id| player_id.as_str() != exclude_player_id)
                 .filter(|player_id| {
                     self.players
-                        .get(player_id.as_str())
+                        .get(*player_id)
                         .map(|p| p.connected)
                         .unwrap_or(false)
                 })
                 .filter_map(|player_id| {
                     self.players
-                        .get(player_id.as_str())
+                        .get(*player_id)
                         .and_then(|p| p.ws_sender.as_ref())
                         .map(|sender| (player_id.clone(), sender.clone()))
                 })
@@ -254,7 +253,6 @@ impl PokerServer {
 
         for (player_id, sender) in players {
             let msg = Arc::clone(&msg_arc);
-            let sender = sender.clone();
             let sem = Arc::clone(&semaphore);
             tokio::spawn(async move {
                 let _permit = sem.acquire().await;
@@ -542,7 +540,6 @@ impl PokerServer {
 
     /// Verifies a player's session token.
     /// Used during reconnection to validate that player owns session.
-    #[allow(dead_code)]
     pub fn verify_session(&self, player_id: &str, token: &str) -> bool {
         self.players
             .get(player_id)

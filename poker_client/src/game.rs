@@ -11,8 +11,6 @@ pub const HOLE_CARDS_COUNT: usize = 2;
 /// Client-side player representation for UI display.
 #[derive(Debug, Clone)]
 pub struct Player {
-    #[allow(dead_code)]
-    pub id: String,
     pub name: String,
     pub chips: i32,
     pub current_bet: i32,
@@ -24,9 +22,8 @@ pub struct Player {
 }
 
 impl Player {
-    pub fn new(id: String, name: String, chips: i32) -> Self {
+    pub fn new(_id: String, name: String, chips: i32) -> Self {
         Self {
-            id,
             name,
             chips,
             current_bet: 0,

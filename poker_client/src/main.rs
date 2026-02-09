@@ -740,12 +740,12 @@ fn update_ui(
                     egui::pos2(villain_pos.x - 30.0, villain_pos.y + 35.0),
                     egui::Vec2::new(35.0, 49.0),
                 );
-                let card2_rect = egui::Rect::from_center_size(
-                    egui::pos2(villain_pos.x + 30.0, villain_pos.y + 35.0),
-                    egui::Vec2::new(35.0, 49.0),
-                );
                 draw_card(ui.painter(), card1_rect, &villain.hole_cards[0]);
-                if villain.hole_cards.len() > HOLE_CARDS_COUNT - 1 {
+                if villain.hole_cards.len() >= 2 {
+                    let card2_rect = egui::Rect::from_center_size(
+                        egui::pos2(villain_pos.x + 30.0, villain_pos.y + 35.0),
+                        egui::Vec2::new(35.0, 49.0),
+                    );
                     draw_card(ui.painter(), card2_rect, &villain.hole_cards[1]);
                 }
             } else if villain.hole_cards.is_empty() {
@@ -795,12 +795,12 @@ fn update_ui(
                     egui::pos2(hero_pos.x - 35.0, hero_pos.y + 35.0),
                     egui::Vec2::new(40.0, 56.0),
                 );
-                let card2_rect = egui::Rect::from_center_size(
-                    egui::pos2(hero_pos.x + 35.0, hero_pos.y + 35.0),
-                    egui::Vec2::new(40.0, 56.0),
-                );
                 draw_card(ui.painter(), card1_rect, &hero.hole_cards[0]);
-                if hero.hole_cards.len() > HOLE_CARDS_COUNT - 1 {
+                if hero.hole_cards.len() >= 2 {
+                    let card2_rect = egui::Rect::from_center_size(
+                        egui::pos2(hero_pos.x + 35.0, hero_pos.y + 35.0),
+                        egui::Vec2::new(40.0, 56.0),
+                    );
                     draw_card(ui.painter(), card2_rect, &hero.hole_cards[1]);
                 }
             }
