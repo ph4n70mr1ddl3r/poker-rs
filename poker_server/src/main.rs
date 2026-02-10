@@ -144,11 +144,11 @@ fn validate_action_amount(amount: i64, max_allowed: i32) -> Result<i32, String> 
     if amount <= 0 {
         return Err("Action amount must be positive".to_string());
     }
-    let amount =
-        i32::try_from(amount).map_err(|_| format!("Amount {} exceeds i32::MAX", amount))?;
+    let amount = i32::try_from(amount)
+        .map_err(|_| format!("Amount {} exceeds maximum value (i32::MAX)", amount))?;
     if amount > max_allowed {
         return Err(format!(
-            "Amount {} exceeds maximum allowed: {}",
+            "Amount ${} exceeds table maximum of ${}",
             amount, max_allowed
         ));
     }

@@ -138,11 +138,8 @@ impl Default for HmacKey {
     fn default() -> Self {
         let mut array = [0u8; HMAC_SECRET_LEN];
         let rng = ring::rand::SystemRandom::new();
-        if rng.fill(&mut array).is_ok() {
-            Self(array)
-        } else {
-            Self(array)
-        }
+        let _ = rng.fill(&mut array);
+        Self(array)
     }
 }
 
@@ -163,6 +160,28 @@ mod tests {
         assert!(!cache.is_duplicate(12345));
         cache.clear();
         assert!(!cache.is_duplicate(12345));
+    }
+
+    #[test]
+    fn test_hmac_key_default() {
+        let key = HmacKey::default();
+        let signature = key.sign("test message");
+        assert!(!signature.is_empty());
+        assert!(key.verify("test message", &signature));
+    }
+
+    #[test]
+    fn test_hmac_key_from_bytes() {
+        let bytes = vec![1u8; 32];
+        let key = HmacKey::from_bytes(&bytes);
+        assert!(key.is_some());
+    }
+
+    #[test]
+    fn test_hmac_key_from_bytes_too_short() {
+        let bytes = vec![1u8; 10];
+        let key = HmacKey::from_bytes(&bytes);
+        assert!(key.is_none());
     }
 }
 
