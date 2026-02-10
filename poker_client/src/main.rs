@@ -619,9 +619,7 @@ fn trigger_reconnection(network_res: &Res<NetworkResources>, _commands: &mut Com
     {
         let mut task_guard = network_task.lock();
         if let Some(old_task) = task_guard.take() {
-            if let Err(e) = old_task.abort() {
-                debug!("Task abort error (may have already completed): {}", e);
-            }
+            old_task.abort();
         }
         *task_guard = Some(task);
     }

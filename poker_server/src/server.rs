@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
-use log::{error, warn};
+use log::{debug, error, warn};
 use parking_lot::Mutex;
 use poker_protocol::{ChatMessage, ClientMessage, PlayerUpdate, ServerMessage};
 use poker_protocol::{ServerError, ServerResult};
