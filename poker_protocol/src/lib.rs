@@ -138,7 +138,9 @@ impl Default for HmacKey {
     fn default() -> Self {
         let mut array = [0u8; HMAC_SECRET_LEN];
         let rng = ring::rand::SystemRandom::new();
-        let _ = rng.fill(&mut array);
+        if rng.fill(&mut array).is_err() {
+            let _ = getrandom::getrandom(&mut array);
+        }
         Self(array)
     }
 }

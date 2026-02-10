@@ -33,7 +33,7 @@ mod network;
 
 use game::PokerGameState;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum ClientNetworkMessage {
     PlayerIdConfirmed(String),
     GameStateUpdate(crate::game::GameStateUpdate),
@@ -986,7 +986,7 @@ fn update_ui(
 
         for error in &app_state.game_state.errors {
             ui.add_space(10.0);
-            ui.colored_label(egui::Color32::RED, format!("Error: {}", error));
+            ui.colored_label(egui::Color32::RED, format!("⚠ {}", error));
         }
     });
 }

@@ -3,7 +3,7 @@ use crate::game::{
     ShowdownUpdate,
 };
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NetworkMessage {
     PlayerIdConfirmed(String),
     GameState(GameStateUpdate),
