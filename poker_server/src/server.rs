@@ -14,11 +14,12 @@ use uuid::Uuid;
 
 use crate::game::PokerGame;
 
+/// Timeout in milliseconds for sending broadcast messages to players
 const BROADCAST_SEND_TIMEOUT_MS: u64 = 5000;
+/// Maximum concurrent broadcast tasks to prevent resource exhaustion
 const MAX_BROADCAST_TASKS: usize = 50;
+/// Maximum concurrent send tasks to prevent resource exhaustion
 const MAX_SEND_TASKS: usize = 100;
-pub const MAX_CONNECTIONS: usize = 100;
-pub const MAX_CONNECTIONS_PER_IP: usize = 5;
 
 /// Type alias for player identifiers.
 pub type PlayerId = String;
@@ -94,11 +95,11 @@ impl PokerServer {
     /// # Returns
     /// `true` if the connection can be accepted, `false` otherwise
     pub fn can_accept_connection(&self, ip: &str) -> bool {
-        self.connection_count < MAX_CONNECTIONS
+        self.connection_count < crate::MAX_CONNECTIONS
             && self
                 .ip_connections
                 .get(ip)
-                .map(|c| *c < MAX_CONNECTIONS_PER_IP)
+                .map(|c| *c < crate::MAX_CONNECTIONS_PER_IP)
                 .unwrap_or(true)
     }
 
@@ -578,7 +579,7 @@ mod tests {
     fn test_connection_limits() {
         let mut server = PokerServer::new();
 
-        for i in 0..MAX_CONNECTIONS {
+        for i in 0..crate::MAX_CONNECTIONS {
             assert!(server.can_accept_connection(&format!("192.168.1.{}", i)));
             server.register_connection(&format!("192.168.1.{}", i));
         }
@@ -590,7 +591,7 @@ mod tests {
     fn test_per_ip_connection_limits() {
         let mut server = PokerServer::new();
 
-        for _ in 0..MAX_CONNECTIONS_PER_IP {
+        for _ in 0..crate::MAX_CONNECTIONS_PER_IP {
             assert!(server.can_accept_connection("127.0.0.1"));
             server.register_connection("127.0.0.1");
         }

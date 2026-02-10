@@ -136,7 +136,16 @@ impl HmacKey {
 
 impl Default for HmacKey {
     fn default() -> Self {
-        Self::new().expect("Failed to generate HMAC key - this is a fatal error")
+        Self::new().unwrap_or_else(|_| {
+            let mut array = [0u8; HMAC_SECRET_LEN];
+            let rng = ring::rand::SystemRandom::new();
+            if rng.fill(&mut array).is_ok() {
+                Self(array)
+            } else {
+                array.copy_from_slice(&[0u8; HMAC_SECRET_LEN]);
+                Self(array)
+            }
+        })
     }
 }
 

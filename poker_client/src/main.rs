@@ -13,12 +13,19 @@ use tokio_tungstenite::tungstenite::Message;
 
 pub const DEFAULT_SERVER_ADDR: &str = "ws://127.0.0.1:8080";
 pub const ENV_SERVER_ADDR: &str = "POKER_SERVER_URL";
+/// Timeout in seconds for establishing initial WebSocket connection
 pub const CONNECTION_TIMEOUT_SECS: u64 = 10;
+/// Maximum number of reconnection attempts before giving up
 pub const MAX_RECONNECT_ATTEMPTS: u32 = 10;
+/// Initial delay in milliseconds before first reconnection attempt
 pub const INITIAL_RECONNECT_DELAY_MS: u64 = 1000;
+/// Maximum delay in milliseconds between reconnection attempts
 pub const MAX_RECONNECT_DELAY_MS: u64 = 30000;
+/// Interval in seconds between ping messages for keep-alive
 pub const PING_INTERVAL_SECS: u64 = 30;
+/// Maximum WebSocket message size in bytes (4KB)
 pub const MAX_MESSAGE_SIZE: usize = 4096;
+/// Number of hole cards dealt to each player
 pub const HOLE_CARDS_COUNT: usize = 2;
 
 mod game;

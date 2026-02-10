@@ -22,6 +22,10 @@ use crate::game::PokerGame;
 use crate::server::PokerServer;
 
 pub const SHUTDOWN_TIMEOUT_SECS: u64 = 5;
+/// Default server bind address
+pub const DEFAULT_SERVER_ADDR: &str = "127.0.0.1:8080";
+/// Environment variable for server bind address
+pub const ENV_SERVER_ADDR: &str = "POKER_SERVER_ADDR";
 
 pub struct TokenBucketRateLimiter {
     tokens: std::sync::atomic::AtomicU64,
@@ -324,8 +328,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     let nonce_cache = Arc::new(NonceCache::new());
 
-    let addr = "127.0.0.1:8080";
-    let listener = TcpListener::bind(addr).await?;
+    let addr = std::env::var(ENV_SERVER_ADDR).unwrap_or_else(|_| DEFAULT_SERVER_ADDR.to_string());
+    let listener = TcpListener::bind(&addr).await?;
     info!("Poker server listening on: {}", addr);
 
     let game = {

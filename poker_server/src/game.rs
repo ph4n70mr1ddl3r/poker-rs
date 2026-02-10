@@ -11,6 +11,7 @@ use tokio::sync::broadcast;
 
 use crate::MAX_BET_MULTIPLIER;
 
+/// Maximum pot size to prevent integer overflow (half of i32::MAX)
 const MAX_POT: i32 = i32::MAX / 2;
 
 #[derive(Debug)]
