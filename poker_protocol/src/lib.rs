@@ -136,15 +136,13 @@ impl HmacKey {
 
 impl Default for HmacKey {
     fn default() -> Self {
-        Self::new().unwrap_or_else(|_| {
-            let mut array = [0u8; HMAC_SECRET_LEN];
-            let rng = ring::rand::SystemRandom::new();
-            if rng.fill(&mut array).is_ok() {
-                Self(array)
-            } else {
-                Self(array)
-            }
-        })
+        let mut array = [0u8; HMAC_SECRET_LEN];
+        let rng = ring::rand::SystemRandom::new();
+        if rng.fill(&mut array).is_ok() {
+            Self(array)
+        } else {
+            Self(array)
+        }
     }
 }
 

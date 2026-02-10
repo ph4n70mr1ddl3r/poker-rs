@@ -6,7 +6,7 @@ use futures::SinkExt;
 use log::{debug, error, info, warn};
 use parking_lot::Mutex;
 use poker_protocol::{ClientMessage, HmacKey, NonceCache, ServerMessage, HMAC_SECRET_LEN};
-use rand::prelude::SliceRandom;
+use rand::seq::SliceRandom;
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -545,20 +545,22 @@ impl MessageHandler {
     }
 
     fn handle_bet(&self, amount_value: i64) {
-        match validate_action_amount(amount_value, MAX_PLAYER_CHIPS) {
-            Ok(amount) => {
-                self.send_action(poker_protocol::PlayerAction::Bet(amount));
-            }
-            Err(err_msg) => {
-                self.send_error(&err_msg);
-            }
-        }
+        self.handle_amount_action(amount_value, poker_protocol::PlayerAction::Bet);
     }
 
     fn handle_raise(&self, amount_value: i64) {
+        self.handle_amount_action(amount_value, |amount| {
+            poker_protocol::PlayerAction::Raise(amount)
+        });
+    }
+
+    fn handle_amount_action<F>(&self, amount_value: i64, action_fn: F)
+    where
+        F: FnOnce(i32) -> poker_protocol::PlayerAction,
+    {
         match validate_action_amount(amount_value, MAX_PLAYER_CHIPS) {
             Ok(amount) => {
-                self.send_action(poker_protocol::PlayerAction::Raise(amount));
+                self.send_action(action_fn(amount));
             }
             Err(err_msg) => {
                 self.send_error(&err_msg);
@@ -707,11 +709,6 @@ async fn handle_connection(
         let config = ServerConfig::default();
 
         while let Some(result) = stream.next().await {
-            if last_activity.elapsed() > Duration::from_millis(INACTIVITY_TIMEOUT_MS) {
-                warn!("Player {} timed out due to inactivity", player_id);
-                break;
-            }
-
             match result {
                 Ok(Message::Text(text)) => {
                     last_activity = Instant::now();
@@ -821,6 +818,10 @@ async fn handle_connection(
                     break;
                 }
                 _ => {}
+            }
+            if last_activity.elapsed() > Duration::from_millis(INACTIVITY_TIMEOUT_MS) {
+                warn!("Player {} timed out due to inactivity", player_id);
+                break;
             }
         }
     });

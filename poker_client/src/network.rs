@@ -32,22 +32,16 @@ fn parse_message_by_type(
     value: &serde_json::Value,
 ) -> Result<NetworkMessage, serde_json::Error> {
     match type_str {
-        "GameStateUpdate" | "gamestate" => {
+        "GameStateUpdate" => {
             serde_json::from_value::<GameStateUpdate>(value.clone()).map(NetworkMessage::GameState)
         }
-        "PlayerUpdates" | "player_updates" => {
-            serde_json::from_value::<Vec<PlayerUpdate>>(value.clone())
-                .map(NetworkMessage::PlayerUpdates)
-        }
-        "ActionRequired" | "action" => {
-            serde_json::from_value::<ActionRequiredUpdate>(value.clone())
-                .map(NetworkMessage::ActionRequired)
-        }
-        "PlayerConnected" | "player_connected" => {
-            serde_json::from_value::<PlayerConnectedUpdate>(value.clone())
-                .map(NetworkMessage::PlayerConnected)
-        }
-        "PlayerDisconnected" | "player_disconnected" => {
+        "PlayerUpdates" => serde_json::from_value::<Vec<PlayerUpdate>>(value.clone())
+            .map(NetworkMessage::PlayerUpdates),
+        "ActionRequired" => serde_json::from_value::<ActionRequiredUpdate>(value.clone())
+            .map(NetworkMessage::ActionRequired),
+        "PlayerConnected" => serde_json::from_value::<PlayerConnectedUpdate>(value.clone())
+            .map(NetworkMessage::PlayerConnected),
+        "PlayerDisconnected" => {
             let player_id = value["player_id"]
                 .as_str()
                 .or(value["id"].as_str())
@@ -55,13 +49,11 @@ fn parse_message_by_type(
                 .to_string();
             Ok(NetworkMessage::PlayerDisconnected(player_id))
         }
-        "Showdown" | "showdown" => {
+        "Showdown" => {
             serde_json::from_value::<ShowdownUpdate>(value.clone()).map(NetworkMessage::Showdown)
         }
-        "Chat" | "chat" => {
-            serde_json::from_value::<ChatMessage>(value.clone()).map(NetworkMessage::Chat)
-        }
-        "Error" | "error" => {
+        "Chat" => serde_json::from_value::<ChatMessage>(value.clone()).map(NetworkMessage::Chat),
+        "Error" => {
             let error_msg = value["message"]
                 .as_str()
                 .or(value.as_str())
@@ -69,21 +61,21 @@ fn parse_message_by_type(
                 .to_string();
             Ok(NetworkMessage::Error(error_msg))
         }
-        "Ping" | "ping" => {
+        "Ping" => {
             let timestamp = value["timestamp"]
                 .as_u64()
                 .or(value["id"].as_u64())
                 .unwrap_or(0);
             Ok(NetworkMessage::Ping(timestamp))
         }
-        "Pong" | "pong" => {
+        "Pong" => {
             let _timestamp = value["timestamp"]
                 .as_u64()
                 .or(value["id"].as_u64())
                 .unwrap_or(0);
             Ok(NetworkMessage::Pong(()))
         }
-        "Connected" | "connected" | "Reconnect" | "reconnect" => {
+        "Connected" | "Reconnect" => {
             let player_id = value["player_id"]
                 .as_str()
                 .or(value["id"].as_str())
