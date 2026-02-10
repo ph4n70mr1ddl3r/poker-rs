@@ -862,8 +862,12 @@ impl PokerGame {
     }
 
     fn evaluate_hand(&self, player: &PlayerState) -> HandEvaluation {
-        let mut all_cards = player.hole_cards.clone();
-        all_cards.extend(self.community_cards.clone());
+        let mut all_cards: Vec<Card> = player
+            .hole_cards
+            .iter()
+            .chain(self.community_cards.iter())
+            .cloned()
+            .collect();
 
         if all_cards.is_empty() {
             return HandEvaluation {
@@ -915,7 +919,7 @@ impl PokerGame {
 
     fn check_straight_flush(&self, cards: &[Card]) -> Option<HandEvaluation> {
         if let Some(flush_cards) = self.get_flush_cards(cards) {
-            let ranks: Vec<_> = flush_cards.iter().map(|c| c.rank as u8).collect();
+            let ranks: Vec<u8> = flush_cards.iter().map(|c| c.rank as u8).collect();
 
             let has_wheel = ranks.contains(&2)
                 && ranks.contains(&3)
@@ -935,7 +939,7 @@ impl PokerGame {
     }
 
     fn check_four_of_a_kind(&self, cards: &[Card]) -> Option<HandEvaluation> {
-        let mut rank_counts: HashMap<u8, usize> = HashMap::new();
+        let mut rank_counts = HashMap::<u8, usize>::new();
         for card in cards {
             *rank_counts.entry(card.rank as u8).or_insert(0) += 1;
         }
@@ -949,7 +953,7 @@ impl PokerGame {
     }
 
     fn check_full_house(&self, cards: &[Card]) -> Option<HandEvaluation> {
-        let mut rank_counts: HashMap<u8, usize> = HashMap::new();
+        let mut rank_counts = HashMap::<u8, usize>::new();
         for card in cards {
             *rank_counts.entry(card.rank as u8).or_insert(0) += 1;
         }
@@ -1048,7 +1052,7 @@ impl PokerGame {
     }
 
     fn check_three_of_a_kind(&self, cards: &[Card]) -> Option<HandEvaluation> {
-        let mut rank_counts: HashMap<u8, usize> = HashMap::new();
+        let mut rank_counts = HashMap::<u8, usize>::new();
         for card in cards {
             *rank_counts.entry(card.rank as u8).or_insert(0) += 1;
         }
@@ -1062,7 +1066,7 @@ impl PokerGame {
     }
 
     fn check_two_pair(&self, cards: &[Card]) -> Option<HandEvaluation> {
-        let mut rank_counts: HashMap<u8, usize> = HashMap::new();
+        let mut rank_counts = HashMap::<u8, usize>::new();
         for card in cards {
             *rank_counts.entry(card.rank as u8).or_insert(0) += 1;
         }
@@ -1081,7 +1085,7 @@ impl PokerGame {
     }
 
     fn check_pair(&self, cards: &[Card]) -> Option<HandEvaluation> {
-        let mut rank_counts: HashMap<u8, usize> = HashMap::new();
+        let mut rank_counts = HashMap::<u8, usize>::new();
         for card in cards {
             *rank_counts.entry(card.rank as u8).or_insert(0) += 1;
         }

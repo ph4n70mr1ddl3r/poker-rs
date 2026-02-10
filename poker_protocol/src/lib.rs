@@ -142,7 +142,6 @@ impl Default for HmacKey {
             if rng.fill(&mut array).is_ok() {
                 Self(array)
             } else {
-                array.copy_from_slice(&[0u8; HMAC_SECRET_LEN]);
                 Self(array)
             }
         })
