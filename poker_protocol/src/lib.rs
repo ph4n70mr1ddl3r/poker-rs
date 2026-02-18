@@ -50,9 +50,11 @@ impl NonceCache {
             return true;
         }
 
-        if data.len() >= NONCE_CACHE_SIZE {
+        while data.len() >= NONCE_CACHE_SIZE {
             if let Some((&oldest_nonce, _)) = data.iter().min_by_key(|(_, timestamp)| *timestamp) {
                 data.remove(&oldest_nonce);
+            } else {
+                break;
             }
         }
 
