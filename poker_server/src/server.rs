@@ -31,6 +31,7 @@ pub struct ServerPlayer {
     pub connected: bool,
     pub ws_sender: Option<Sender<String>>,
     pub seated: bool,
+    #[allow(dead_code)]
     pub session_token: String,
     pub session_created_at: DateTime<Utc>,
 }
@@ -87,6 +88,7 @@ impl PokerServer {
     }
 
     /// Sets the session token expiry duration in hours.
+    #[allow(dead_code)]
     pub fn set_session_expiry_hours(&mut self, hours: u64) {
         self.session_expiry_hours = hours;
     }
@@ -546,6 +548,7 @@ impl PokerServer {
 
     /// Verifies a player's session token.
     /// Used during reconnection to validate that player owns session.
+    #[allow(dead_code)]
     pub fn verify_session(&self, player_id: &str, token: &str) -> bool {
         self.players
             .get(player_id)
