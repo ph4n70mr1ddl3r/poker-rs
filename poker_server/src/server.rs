@@ -49,7 +49,7 @@ impl ServerPlayer {
     }
 
     pub fn is_session_expired(&self, expiry_hours: u64) -> bool {
-        let expiry_duration = chrono::Duration::hours(expiry_hours as i64);
+        let _expiry_duration = chrono::Duration::hours(expiry_hours as i64);
         Utc::now()
             .signed_duration_since(self.session_created_at)
             .to_std()
@@ -229,13 +229,13 @@ impl PokerServer {
                 .filter(|player_id| player_id.as_str() != exclude_player_id)
                 .filter(|player_id| {
                     self.players
-                        .get(*player_id)
+                        .get(player_id.as_str())
                         .map(|p| p.connected)
                         .unwrap_or(false)
                 })
                 .filter_map(|player_id| {
                     self.players
-                        .get(*player_id)
+                        .get(player_id.as_str())
                         .and_then(|p| p.ws_sender.as_ref())
                         .map(|sender| (player_id.clone(), sender.clone()))
                 })
@@ -532,11 +532,12 @@ impl PokerServer {
 
         let sem = Arc::clone(&self.send_semaphore);
         let sender = sender.clone();
+        let player_id_owned = player_id.to_string();
 
         tokio::spawn(async move {
             let _permit = sem.acquire().await;
             if let Err(e) = sender.send(message).await {
-                error!("Failed to send message to player {}: {}", player_id, e);
+                error!("Failed to send message to player {}: {}", player_id_owned, e);
             }
         });
 

@@ -213,9 +213,19 @@ impl PokerGame {
 
     fn deal_hole_cards(&mut self) {
         for _ in 0..2 {
-            for player in self.players.values_mut() {
-                if !player.is_sitting_out && player.chips > 0 {
-                    if let Some(card) = self.deal_card() {
+            let player_ids: Vec<String> = self
+                .players
+                .iter()
+                .filter(|(_, p)| !p.is_sitting_out && p.chips > 0)
+                .map(|(id, _)| id.clone())
+                .collect();
+
+            let cards_to_deal: Vec<Option<Card>> =
+                player_ids.iter().map(|_| self.deal_card()).collect();
+
+            for (player_id, card) in player_ids.iter().zip(cards_to_deal.into_iter()) {
+                if let Some(card) = card {
+                    if let Some(player) = self.players.get_mut(player_id) {
                         player.hole_cards.push(card);
                     }
                 }
@@ -485,13 +495,16 @@ impl PokerGame {
                 }
             }
             PlayerAction::Call => {
-                let player = self
-                    .players
-                    .get_mut(player_id)
-                    .ok_or_else(|| ServerError::PlayerNotFound(player_id.to_string()))?;
-
-                let player_current_bet = player.current_bet;
-                let player_chips = player.chips;
+                let player_current_bet;
+                let player_chips;
+                {
+                    let player = self
+                        .players
+                        .get(player_id)
+                        .ok_or_else(|| ServerError::PlayerNotFound(player_id.to_string()))?;
+                    player_current_bet = player.current_bet;
+                    player_chips = player.chips;
+                }
 
                 let call_amount = current_bet
                     .saturating_sub(player_current_bet)
@@ -504,6 +517,10 @@ impl PokerGame {
                     self.pot = new_pot;
                 }
 
+                let player = self
+                    .players
+                    .get_mut(player_id)
+                    .ok_or_else(|| ServerError::PlayerNotFound(player_id.to_string()))?;
                 player.chips = player.chips.saturating_sub(call_amount);
                 player.current_bet = player.current_bet.saturating_add(call_amount);
                 player.has_acted = true;
@@ -774,9 +791,10 @@ impl PokerGame {
 
         let side_pots = self.calculate_side_pots();
 
+        #[allow(clippy::explicit_auto_deref)]
         let mut hand_evals: Vec<(&PlayerState, HandEvaluation)> = active_players
             .iter()
-            .map(|p| (p, self.evaluate_hand(p)))
+            .map(|p| (*p, self.evaluate_hand(*p)))
             .collect();
 
         if hand_evals.is_empty() {
@@ -862,7 +880,7 @@ impl PokerGame {
     }
 
     fn evaluate_hand(&self, player: &PlayerState) -> HandEvaluation {
-        let mut all_cards: Vec<Card> = player
+        let all_cards: Vec<Card> = player
             .hole_cards
             .iter()
             .chain(self.community_cards.iter())
@@ -1676,7 +1694,7 @@ mod tests {
         game.add_player("p1".to_string(), "Player1".to_string(), 1000);
 
         let player = game.players.get("p1").unwrap();
-        let result = game.validate_raise_amount(player, 50, 0);
+        let result = game.validate_raise_amount(player, 50);
         assert!(result.is_ok());
     }
 
@@ -1688,7 +1706,7 @@ mod tests {
 
         let player = game.players.get("p1").unwrap();
         game.min_raise = 100;
-        let result = game.validate_raise_amount(player, 50, 0);
+        let result = game.validate_raise_amount(player, 50);
         assert!(result.is_err());
     }
 
