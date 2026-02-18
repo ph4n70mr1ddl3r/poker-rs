@@ -50,7 +50,6 @@ impl ServerPlayer {
     }
 
     pub fn is_session_expired(&self, expiry_hours: u64) -> bool {
-        let _expiry_duration = chrono::Duration::hours(expiry_hours as i64);
         Utc::now()
             .signed_duration_since(self.session_created_at)
             .to_std()
