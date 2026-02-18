@@ -598,13 +598,12 @@ impl PokerGame {
                     .get(player_id)
                     .ok_or_else(|| ServerError::PlayerNotFound(player_id.to_string()))?;
 
+                if player.chips == 0 {
+                    return Err(ServerError::NoChips);
+                }
+
                 let all_in_amount = player.chips;
                 let new_bet = player.current_bet.saturating_add(all_in_amount);
-                let total_bet = new_bet;
-
-                if current_bet > 0 && total_bet < current_bet.saturating_add(self.min_raise) {
-                    return Err(ServerError::MinRaise(self.min_raise));
-                }
 
                 let new_pot = self.calculate_new_pot(all_in_amount).ok_or_else(|| {
                     ServerError::InvalidBet("Pot size exceeds maximum allowed".to_string())
@@ -815,12 +814,6 @@ impl PokerGame {
             .collect();
 
         let winner_ids: Vec<String> = winners.iter().map(|p| p.id.clone()).collect();
-        let winner_count = winners.len() as i32;
-
-        if winner_count == 0 {
-            self.end_hand();
-            return;
-        }
 
         let showdown_update = ShowdownUpdate {
             community_cards: self.community_cards.iter().map(|c| c.to_string()).collect(),
