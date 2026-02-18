@@ -265,10 +265,17 @@ impl PokerServer {
             let msg = Arc::clone(&msg_arc);
             let sem = Arc::clone(&semaphore);
             tokio::spawn(async move {
-                let _permit = sem.acquire().await;
+                let permit = match sem.acquire().await {
+                    Ok(permit) => permit,
+                    Err(e) => {
+                        error!("Failed to acquire broadcast semaphore: {}", e);
+                        return;
+                    }
+                };
                 if let Err(e) = timeout(timeout_duration, sender.send((*msg).clone())).await {
                     error!("Timeout sending to player {}: {}", player_id, e);
                 }
+                drop(permit);
             });
         }
     }
@@ -511,10 +518,17 @@ impl PokerServer {
             let sender = sender.clone();
             let sem = Arc::clone(&semaphore);
             tokio::spawn(async move {
-                let _permit = sem.acquire().await;
+                let permit = match sem.acquire().await {
+                    Ok(permit) => permit,
+                    Err(e) => {
+                        error!("Failed to acquire broadcast semaphore: {}", e);
+                        return;
+                    }
+                };
                 if let Err(e) = timeout(timeout_duration, sender.send((*msg).clone())).await {
                     error!("Timeout sending to player {}: {}", player_id, e);
                 }
+                drop(permit);
             });
         }
     }
@@ -540,10 +554,17 @@ impl PokerServer {
         let player_id_owned = player_id.to_string();
 
         tokio::spawn(async move {
-            let _permit = sem.acquire().await;
+            let permit = match sem.acquire().await {
+                Ok(permit) => permit,
+                Err(e) => {
+                    error!("Failed to acquire send semaphore: {}", e);
+                    return;
+                }
+            };
             if let Err(e) = sender.send(message).await {
                 error!("Failed to send message to player {}: {}", player_id_owned, e);
             }
+            drop(permit);
         });
 
         Ok(())

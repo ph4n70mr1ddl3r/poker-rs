@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fmt;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -21,14 +21,17 @@ const NONCE_EXPIRY_MS: u64 = 60000;
 
 /// Cache for tracking used nonces to prevent replay attacks.
 /// Uses a time-based expiry to clean up old entries.
+/// Uses BTreeMap for efficient O(log n) eviction of oldest entries.
 pub struct NonceCache {
     data: Arc<Mutex<HashMap<u64, Instant>>>,
+    expiry_order: Arc<Mutex<BTreeMap<Instant, u64>>>,
 }
 
 impl NonceCache {
     pub fn new() -> Self {
         Self {
             data: Arc::new(Mutex::new(HashMap::new())),
+            expiry_order: Arc::new(Mutex::new(BTreeMap::new())),
         }
     }
 
@@ -42,8 +45,11 @@ impl NonceCache {
     pub fn is_duplicate(&self, nonce: u64) -> bool {
         let now = Instant::now();
         let expiry_duration = Duration::from_millis(NONCE_EXPIRY_MS);
-        let mut data = self.data.lock();
 
+        let mut data = self.data.lock();
+        let mut expiry_order = self.expiry_order.lock();
+
+        expiry_order.retain(|&timestamp, _| now.duration_since(timestamp) < expiry_duration);
         data.retain(|_, &mut timestamp| now.duration_since(timestamp) < expiry_duration);
 
         if data.contains_key(&nonce) {
@@ -51,7 +57,8 @@ impl NonceCache {
         }
 
         while data.len() >= NONCE_CACHE_SIZE {
-            if let Some((&oldest_nonce, _)) = data.iter().min_by_key(|(_, timestamp)| *timestamp) {
+            if let Some((&oldest_timestamp, &oldest_nonce)) = expiry_order.iter().next() {
+                expiry_order.remove(&oldest_timestamp);
                 data.remove(&oldest_nonce);
             } else {
                 break;
@@ -59,12 +66,15 @@ impl NonceCache {
         }
 
         data.insert(nonce, now);
+        expiry_order.insert(now, nonce);
         false
     }
 
     pub fn clear(&self) {
         let mut data = self.data.lock();
+        let mut expiry_order = self.expiry_order.lock();
         data.clear();
+        expiry_order.clear();
     }
 }
 
