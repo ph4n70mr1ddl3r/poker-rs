@@ -163,6 +163,10 @@ impl PokerServer {
     /// * `name` - Player's display name
     /// * `chips` - Starting chip amount
     pub fn register_player(&mut self, player_id: PlayerId, name: String, chips: i32) {
+        if self.players.contains_key(&player_id) {
+            debug!("Player {} already registered, skipping", player_id);
+            return;
+        }
         let player = ServerPlayer::new(player_id.clone(), name, chips);
         self.players.insert(player_id, player);
     }
