@@ -23,16 +23,27 @@ const NONCE_EXPIRY_MS: u64 = 60000;
 /// Cache for tracking used nonces to prevent replay attacks.
 /// Uses a time-based expiry to clean up old entries.
 /// Uses BTreeMap for efficient O(log n) eviction of oldest entries.
+///
+/// Thread-safe implementation using a single lock to prevent race conditions
+/// between the nonce data and expiry ordering.
 pub struct NonceCache {
-    data: Arc<Mutex<HashMap<u64, Instant>>>,
-    expiry_order: Arc<Mutex<BTreeMap<Instant, u64>>>,
+    inner: Arc<Mutex<NonceCacheData>>,
+}
+
+/// Combined data structure for nonce tracking to ensure atomic operations.
+struct NonceCacheData {
+    nonces: HashMap<u64, Instant>,
+    expiry_order: BTreeMap<Instant, u64>,
 }
 
 impl NonceCache {
+    /// Creates a new empty nonce cache.
     pub fn new() -> Self {
         Self {
-            data: Arc::new(Mutex::new(HashMap::new())),
-            expiry_order: Arc::new(Mutex::new(BTreeMap::new())),
+            inner: Arc::new(Mutex::new(NonceCacheData {
+                nonces: HashMap::new(),
+                expiry_order: BTreeMap::new(),
+            })),
         }
     }
 
@@ -47,35 +58,48 @@ impl NonceCache {
         let now = Instant::now();
         let expiry_duration = Duration::from_millis(NONCE_EXPIRY_MS);
 
-        let mut data = self.data.lock();
-        let mut expiry_order = self.expiry_order.lock();
+        let mut cache = self.inner.lock();
 
-        expiry_order.retain(|&timestamp, _| now.duration_since(timestamp) < expiry_duration);
-        data.retain(|_, &mut timestamp| now.duration_since(timestamp) < expiry_duration);
+        // Clean up expired entries
+        cache
+            .expiry_order
+            .retain(|&timestamp, _| now.duration_since(timestamp) < expiry_duration);
+        cache
+            .nonces
+            .retain(|_, &mut timestamp| now.duration_since(timestamp) < expiry_duration);
 
-        if data.contains_key(&nonce) {
+        // Check if nonce is already present
+        if cache.nonces.contains_key(&nonce) {
             return true;
         }
 
-        while data.len() >= NONCE_CACHE_SIZE {
-            if let Some((&oldest_timestamp, &oldest_nonce)) = expiry_order.iter().next() {
-                expiry_order.remove(&oldest_timestamp);
-                data.remove(&oldest_nonce);
+        // Evict oldest entries if at capacity
+        while cache.nonces.len() >= NONCE_CACHE_SIZE {
+            if let Some((&oldest_timestamp, &oldest_nonce)) = cache.expiry_order.iter().next() {
+                cache.expiry_order.remove(&oldest_timestamp);
+                cache.nonces.remove(&oldest_nonce);
             } else {
                 break;
             }
         }
 
-        data.insert(nonce, now);
-        expiry_order.insert(now, nonce);
+        // Insert new nonce
+        cache.nonces.insert(nonce, now);
+        cache.expiry_order.insert(now, nonce);
         false
     }
 
+    /// Clears all nonces from the cache.
     pub fn clear(&self) {
-        let mut data = self.data.lock();
-        let mut expiry_order = self.expiry_order.lock();
-        data.clear();
-        expiry_order.clear();
+        let mut cache = self.inner.lock();
+        cache.nonces.clear();
+        cache.expiry_order.clear();
+    }
+
+    /// Returns the current number of nonces in the cache.
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        self.inner.lock().nonces.len()
     }
 }
 

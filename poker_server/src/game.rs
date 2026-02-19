@@ -277,10 +277,16 @@ impl PokerGame {
         self.game_stage = GameStage::BettingRound(Street::Preflop);
 
         let active_player_ids = self.get_active_player_ids();
-        self.current_player_id = active_player_ids
-            .get(1)
-            .cloned()
-            .or_else(|| active_player_ids.first().cloned());
+        // First player to act preflop is the player after the big blind (UTG)
+        // Big blind is at index 1, so first to act is at index 2 (wrapping around)
+        self.current_player_id = if active_player_ids.len() >= 3 {
+            active_player_ids.get(2).cloned()
+        } else if active_player_ids.len() == 2 {
+            // In heads-up, first to act is the small blind (dealer/button)
+            active_player_ids.first().cloned()
+        } else {
+            active_player_ids.first().cloned()
+        };
 
         self.broadcast_game_state();
         self.request_action();

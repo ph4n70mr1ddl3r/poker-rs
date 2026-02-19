@@ -27,6 +27,10 @@ pub const DEFAULT_SERVER_ADDR: &str = "127.0.0.1:8080";
 /// Environment variable for server bind address
 pub const ENV_SERVER_ADDR: &str = "POKER_SERVER_ADDR";
 
+/// A thread-safe token bucket rate limiter implementation.
+/// 
+/// Uses atomic operations for efficient concurrent access without locking.
+/// Tokens are refilled at a fixed rate over time.
 pub struct TokenBucketRateLimiter {
     tokens: std::sync::atomic::AtomicU64,
     last_update_ms: std::sync::atomic::AtomicU64,
@@ -35,6 +39,17 @@ pub struct TokenBucketRateLimiter {
 }
 
 impl TokenBucketRateLimiter {
+    /// Creates a new token bucket rate limiter.
+    ///
+    /// # Arguments
+    /// * `max_tokens` - Maximum number of tokens the bucket can hold
+    /// * `refill_rate` - Number of tokens to add per second
+    ///
+    /// # Examples
+    /// ```
+    /// let limiter = TokenBucketRateLimiter::new(100, 10);
+    /// // Allows up to 100 actions, refilling at 10 tokens per second
+    /// ```
     pub fn new(max_tokens: u64, refill_rate: u64) -> Self {
         let now_ms = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -47,6 +62,13 @@ impl TokenBucketRateLimiter {
         }
     }
 
+    /// Attempts to consume one token from the bucket.
+    ///
+    /// Uses compare-and-swap loop for thread-safe updates.
+    /// Automatically refills tokens based on elapsed time since last update.
+    ///
+    /// # Returns
+    /// `true` if a token was consumed, `false` if no tokens available
     pub fn allow(&self) -> bool {
         let now_ms = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -96,11 +118,15 @@ impl TokenBucketRateLimiter {
     }
 }
 
+/// Rate limiter for player actions.
+///
+/// Limits players to 100 actions with a refill rate of 10 tokens per second.
 struct RateLimiter {
     inner: TokenBucketRateLimiter,
 }
 
 impl RateLimiter {
+    /// Creates a new action rate limiter with default limits.
     fn new() -> Self {
         Self {
             inner: TokenBucketRateLimiter::new(
@@ -110,6 +136,7 @@ impl RateLimiter {
         }
     }
 
+    /// Checks if an action is allowed under the rate limit.
     fn allow(&self) -> bool {
         self.inner.allow()
     }
@@ -121,22 +148,33 @@ impl Default for RateLimiter {
     }
 }
 
+/// Rate limiter for chat messages.
+///
+/// Limits players to 20 chat messages with a refill rate of 5 tokens per second.
 struct ChatRateLimiter {
     inner: TokenBucketRateLimiter,
 }
 
 impl ChatRateLimiter {
+    /// Creates a new chat rate limiter with default limits.
     fn new() -> Self {
         Self {
             inner: TokenBucketRateLimiter::new(
-                5, // max_tokens: Allow up to 5 chat messages
-                1, // refill_rate: Refill 1 token per second (1 message/sec)
+                20, // max_tokens: Allow up to 20 chat messages
+                5,  // refill_rate: Refill 5 tokens per second
             ),
         }
     }
 
+    /// Checks if a chat message is allowed under the rate limit.
     fn allow(&self) -> bool {
         self.inner.allow()
+    }
+}
+
+impl Default for ChatRateLimiter {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -301,14 +339,26 @@ async fn wait_for_shutdown_signal() {
     #[cfg(unix)]
     {
         let ctrl_c = async {
-            signal::ctrl_c().await.expect("Failed to listen for Ctrl+C");
+            match signal::ctrl_c().await {
+                Ok(()) => {
+                    info!("Received Ctrl+C signal, initiating shutdown");
+                }
+                Err(e) => {
+                    error!("Failed to listen for Ctrl+C: {}", e);
+                }
+            }
         };
 
         let terminate = async {
-            signal::unix::signal(signal::unix::SignalKind::terminate())
-                .expect("Failed to install signal handler")
-                .recv()
-                .await;
+            match signal::unix::signal(signal::unix::SignalKind::terminate()) {
+                Ok(mut stream) => {
+                    stream.recv().await;
+                    info!("Received SIGTERM signal, initiating shutdown");
+                }
+                Err(e) => {
+                    error!("Failed to install SIGTERM signal handler: {}", e);
+                }
+            }
         };
 
         tokio::select! {
@@ -318,7 +368,14 @@ async fn wait_for_shutdown_signal() {
     }
     #[cfg(not(unix))]
     {
-        signal::ctrl_c().await.expect("Failed to listen for Ctrl+C");
+        match signal::ctrl_c().await {
+            Ok(()) => {
+                info!("Received Ctrl+C signal, initiating shutdown");
+            }
+            Err(e) => {
+                error!("Failed to listen for Ctrl+C: {}", e);
+            }
+        }
     }
 }
 
@@ -461,6 +518,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+/// Generates a unique player name based on the player ID.
+///
+/// Creates names using animal/card combinations (e.g., "RabbitAce", "WolfKing")
+/// with the first 4 characters of the player ID appended.
+///
+/// # Arguments
+/// * `player_id` - The unique player identifier (UUID)
+///
+/// # Returns
+/// A generated player name string
+///
+/// # Examples
+/// Might generate: "RabbitAceA7B2", "WolfKingC3D4", etc.
 fn generate_player_name(player_id: &str) -> String {
     const PLAYER_NAME_PREFIXES: &[&str] = &[
         "Rabbit", "Fox", "Bear", "Wolf", "Eagle", "Lion", "Tiger", "Hawk", "Shark", "Snake",
@@ -483,10 +553,23 @@ fn generate_player_name(player_id: &str) -> String {
     )
 }
 
+/// Sanitizes a chat message to prevent injection attacks and limit length.
+///
+/// Performs the following sanitization:
+/// - Limits message to 500 characters
+/// - Removes control characters (except whitespace)
+/// - Converts tabs, newlines, and carriage returns to spaces
+/// - Trims leading/trailing whitespace
+///
+/// # Arguments
+/// * `text` - The raw chat message text
+///
+/// # Returns
+/// Sanitized message string safe for broadcast
 fn sanitize_chat_message(text: &str) -> String {
-    let max_len = 500;
-    let mut result = String::with_capacity(text.len().min(max_len));
-    for c in text.chars().take(max_len) {
+    const MAX_CHAT_LENGTH: usize = 500;
+    let mut result = String::with_capacity(text.len().min(MAX_CHAT_LENGTH));
+    for c in text.chars().take(MAX_CHAT_LENGTH) {
         if c.is_control() && !c.is_whitespace() {
             continue;
         }
@@ -499,6 +582,10 @@ fn sanitize_chat_message(text: &str) -> String {
     result.trim().to_string()
 }
 
+/// Handles incoming WebSocket messages from a connected player.
+///
+/// Manages rate limiting for actions and chat messages, processes game actions,
+/// and handles player lifecycle events.
 struct MessageHandler {
     server: Arc<Mutex<PokerServer>>,
     player_id: String,
