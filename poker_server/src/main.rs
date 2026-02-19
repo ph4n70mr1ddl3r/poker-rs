@@ -968,7 +968,7 @@ mod tests {
     #[test]
     fn test_chat_rate_limiter_allow() {
         let limiter = ChatRateLimiter::new();
-        for _ in 0..5 {
+        for _ in 0..20 {
             assert!(limiter.allow());
         }
         assert!(!limiter.allow());

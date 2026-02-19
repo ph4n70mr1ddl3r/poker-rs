@@ -2,7 +2,7 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Suit {
     Clubs,
     Diamonds,
@@ -21,7 +21,7 @@ impl fmt::Display for Suit {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Rank {
     Two = 2,
     Three = 3,
@@ -83,13 +83,25 @@ impl fmt::Display for Rank {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Card {
     pub suit: Suit,
     pub rank: Rank,
 }
 
 impl Card {
+    /// Creates a new card with the given suit and rank.
+    ///
+    /// # Arguments
+    /// * `suit` - The suit of the card (Clubs, Diamonds, Hearts, Spades)
+    /// * `rank` - The rank of the card (Two through Ace)
+    ///
+    /// # Examples
+    /// ```
+    /// use poker_protocol::{Card, Suit, Rank};
+    /// let card = Card::new(Suit::Hearts, Rank::Ace);
+    /// assert_eq!(card.to_string(), "A♥");
+    /// ```
     pub fn new(suit: Suit, rank: Rank) -> Self {
         Self { suit, rank }
     }

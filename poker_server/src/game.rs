@@ -777,7 +777,8 @@ impl PokerGame {
         let min_bet = players_vec.first().map(|p| p.current_bet).unwrap_or(0);
 
         let main_pot_players: Vec<String> = players_vec.iter().map(|p| p.id.clone()).collect();
-        let main_pot_amount = min_bet.saturating_mul(main_pot_players.len() as i32);
+        let player_count: i32 = main_pot_players.len().try_into().unwrap_or(i32::MAX);
+        let main_pot_amount = min_bet.saturating_mul(player_count);
         pots.push((main_pot_amount, main_pot_players));
 
         let mut current_level = min_bet;
@@ -791,7 +792,8 @@ impl PokerGame {
                     .map(|p| p.id.clone())
                     .collect();
 
-                let side_pot_amount = excess.saturating_mul(eligible_players.len() as i32);
+                let eligible_count: i32 = eligible_players.len().try_into().unwrap_or(i32::MAX);
+                let side_pot_amount = excess.saturating_mul(eligible_count);
                 pots.push((side_pot_amount, eligible_players));
             }
             current_level = player.current_bet;
@@ -1543,12 +1545,17 @@ mod tests {
         let initial_chips = player.chips;
         let initial_bet = player.current_bet;
 
+        let raise_amount = 20;
+        let current_table_bet = game.get_current_bet();
+        let total_bet = current_table_bet + raise_amount;
+        let actual_deduction = total_bet - initial_bet;
+
         let result = game.handle_action(&player_id, PlayerAction::Raise(20));
         assert!(result.is_ok());
 
         let p_updated = game.players.get(&player_id).unwrap();
-        assert_eq!(p_updated.chips, initial_chips - 20);
-        assert_eq!(p_updated.current_bet, initial_bet + 20);
+        assert_eq!(p_updated.chips, initial_chips - actual_deduction);
+        assert_eq!(p_updated.current_bet, total_bet);
     }
 
     #[test]

@@ -9,20 +9,35 @@ pub use poker_protocol::{
 pub const HOLE_CARDS_COUNT: usize = 2;
 
 /// Client-side player representation for UI display.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Player {
+    /// Unique player identifier
     pub id: String,
+    /// Display name of the player
     pub name: String,
+    /// Current chip count
     pub chips: i32,
+    /// Current bet in the active betting round
     pub current_bet: i32,
+    /// Whether the player has acted this betting round
     pub has_acted: bool,
+    /// Whether the player is all-in
     pub is_all_in: bool,
+    /// Whether the player has folded
     pub is_folded: bool,
+    /// Whether the player is sitting out
     pub is_sitting_out: bool,
+    /// The player's hole cards (as display strings)
     pub hole_cards: Vec<String>,
 }
 
 impl Player {
+    /// Creates a new player with the given ID, name, and starting chips.
+    ///
+    /// # Arguments
+    /// * `id` - Unique player identifier
+    /// * `name` - Display name for the player
+    /// * `chips` - Starting chip count
     pub fn new(id: String, name: String, chips: i32) -> Self {
         Self {
             id,

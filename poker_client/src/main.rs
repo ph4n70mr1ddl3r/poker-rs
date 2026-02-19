@@ -878,14 +878,11 @@ fn update_ui(
                     ui.add_space(10.0);
 
                     ui.label("Raise: $");
-                    let raise_amount_str = {
-                        if let Some(guard) = app_state.raise_amount.try_lock() {
-                            (*guard).clone()
-                        } else {
-                            ui.label("System busy, try again");
-                            return;
-                        }
-                    };
+                    let raise_amount_str = app_state
+                        .raise_amount
+                        .try_lock()
+                        .map(|g| g.clone())
+                        .unwrap_or_default();
                     let mut raise_amount_str = raise_amount_str;
                     let raise_input =
                         egui::TextEdit::singleline(&mut raise_amount_str).desired_width(80.0);
