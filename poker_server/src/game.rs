@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use log::{debug, error};
+use log::{debug, error, warn};
 use poker_protocol::{
     ActionRequiredUpdate, Card, GameStage, GameStateUpdate, HandEvaluation, HandRank, PlayerAction,
     PlayerConnectedUpdate, PlayerState, PlayerUpdate, Rank, ServerError, ServerMessage,
@@ -14,6 +14,8 @@ use crate::MAX_BET_MULTIPLIER;
 
 /// Maximum pot size to prevent integer overflow (half of i32::MAX)
 const MAX_POT: i32 = i32::MAX / 2;
+/// Maximum number of players allowed at a table (standard Texas Hold'em)
+pub const MAX_PLAYERS: usize = 10;
 
 #[derive(Debug)]
 pub struct PokerGame {
@@ -124,7 +126,21 @@ impl PokerGame {
     /// * `player_id` - Unique player identifier
     /// * `name` - Player's display name
     /// * `chips` - Starting chip amount
-    pub fn add_player(&mut self, player_id: String, name: String, chips: i32) {
+    ///
+    /// # Returns
+    /// * `Ok(())` if the player was added successfully
+    /// * `Err(ServerError::GameFull)` if the table is at maximum capacity
+    pub fn add_player(&mut self, player_id: String, name: String, chips: i32) -> ServerResult<()> {
+        if self.players.len() >= MAX_PLAYERS {
+            warn!(
+                "Attempted to add player {} to full table ({}/{} players)",
+                player_id,
+                self.players.len(),
+                MAX_PLAYERS
+            );
+            return Err(ServerError::GameFull);
+        }
+
         let player = PlayerState::new(player_id.clone(), name.clone(), chips);
         self.players.insert(player_id.clone(), player);
 
@@ -138,6 +154,8 @@ impl PokerGame {
         if self.players.len() == 2 {
             self.start_hand();
         }
+
+        Ok(())
     }
 
     /// Sets a player to sit out (they won't receive cards or be required to act).
@@ -1436,7 +1454,8 @@ mod tests {
     fn test_sit_out_and_return() {
         let tx = tokio::sync::broadcast::channel(100).0;
         let mut game = PokerGame::new("test".to_string(), 5, 10, tx);
-        game.add_player("p1".to_string(), "Player1".to_string(), 1000);
+        game.add_player("p1".to_string(), "Player1".to_string(), 1000)
+            .unwrap();
 
         game.sit_out("p1");
         let p1 = game.players.get("p1").unwrap();
@@ -1474,8 +1493,10 @@ mod tests {
     fn test_betting_round_check_and_call() {
         let tx = tokio::sync::broadcast::channel(100).0;
         let mut game = PokerGame::new("test".to_string(), 5, 10, tx);
-        game.add_player("p1".to_string(), "Player1".to_string(), 1000);
-        game.add_player("p2".to_string(), "Player2".to_string(), 1000);
+        game.add_player("p1".to_string(), "Player1".to_string(), 1000)
+            .unwrap();
+        game.add_player("p2".to_string(), "Player2".to_string(), 1000)
+            .unwrap();
 
         let player_to_act = game.get_player_to_act();
         assert!(player_to_act.is_some());
@@ -1497,8 +1518,10 @@ mod tests {
     fn test_betting_round_fold() {
         let tx = tokio::sync::broadcast::channel(100).0;
         let mut game = PokerGame::new("test".to_string(), 5, 10, tx);
-        game.add_player("p1".to_string(), "Player1".to_string(), 1000);
-        game.add_player("p2".to_string(), "Player2".to_string(), 1000);
+        game.add_player("p1".to_string(), "Player1".to_string(), 1000)
+            .unwrap();
+        game.add_player("p2".to_string(), "Player2".to_string(), 1000)
+            .unwrap();
 
         let player_to_act = game.get_player_to_act().unwrap();
         let player_id = player_to_act.id.clone();
@@ -1515,8 +1538,10 @@ mod tests {
     fn test_betting_round_call() {
         let tx = tokio::sync::broadcast::channel(100).0;
         let mut game = PokerGame::new("test".to_string(), 5, 10, tx);
-        game.add_player("p1".to_string(), "Player1".to_string(), 1000);
-        game.add_player("p2".to_string(), "Player2".to_string(), 1000);
+        game.add_player("p1".to_string(), "Player1".to_string(), 1000)
+            .unwrap();
+        game.add_player("p2".to_string(), "Player2".to_string(), 1000)
+            .unwrap();
 
         let player_to_act = game.get_player_to_act().unwrap();
         let player_id = player_to_act.id.clone();
@@ -1891,5 +1916,25 @@ mod tests {
         assert_eq!(p.chips, 0);
         assert!(p.is_all_in);
         assert!(p.has_acted);
+    }
+
+    #[test]
+    fn test_max_players_enforcement() {
+        let tx = tokio::sync::broadcast::channel(100).0;
+        let mut game = PokerGame::new("test".to_string(), 5, 10, tx);
+
+        for i in 0..MAX_PLAYERS {
+            let result = game.add_player(format!("p{}", i), format!("Player{}", i), 1000);
+            assert!(
+                result.is_ok(),
+                "Should allow player {} of {}",
+                i + 1,
+                MAX_PLAYERS
+            );
+        }
+
+        let result = game.add_player("p_extra".to_string(), "ExtraPlayer".to_string(), 1000);
+        assert!(result.is_err(), "Should reject player beyond MAX_PLAYERS");
+        assert!(matches!(result.unwrap_err(), ServerError::GameFull));
     }
 }

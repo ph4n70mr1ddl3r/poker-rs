@@ -98,6 +98,9 @@ pub enum ServerError {
     #[error("Amount too large")]
     AmountTooLarge,
 
+    #[error("Game is full")]
+    GameFull,
+
     #[error("Mutex lock failed")]
     LockFailed,
 

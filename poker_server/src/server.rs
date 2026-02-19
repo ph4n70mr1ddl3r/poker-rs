@@ -331,7 +331,11 @@ impl PokerServer {
             .insert(player_id.to_string(), game_id.to_string());
 
         game.lock()
-            .add_player(player_id.to_string(), player.name.clone(), player.chips);
+            .add_player(player_id.to_string(), player.name.clone(), player.chips)
+            .map_err(|e| {
+                warn!("Failed to add player {} to game: {}", player_id, e);
+                e
+            })?;
 
         let connected_msg = ServerMessage::Connected(player_id.to_string());
         let json = serde_json::to_string(&connected_msg)

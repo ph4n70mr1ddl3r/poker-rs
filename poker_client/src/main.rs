@@ -174,9 +174,11 @@ async fn connect_with_retry(
             match state.next_attempt() {
                 Some(d) => d,
                 None => {
-                    let _ = tx_for_network.send(ClientNetworkMessage::Error(
+                    if let Err(e) = tx_for_network.send(ClientNetworkMessage::Error(
                         "Max reconnection attempts reached".to_string(),
-                    ));
+                    )) {
+                        warn!("Failed to send max reconnect error: {}", e);
+                    }
                     return Err("Max reconnection attempts reached".to_string());
                 }
             }
@@ -207,18 +209,22 @@ async fn connect_with_retry(
             Ok(Err(e)) => {
                 warn!("Connection attempt failed: {}", e);
                 let attempt = reconnect_state.lock().attempt;
-                let _ = tx_for_network.send(ClientNetworkMessage::Error(format!(
+                if let Err(err) = tx_for_network.send(ClientNetworkMessage::Error(format!(
                     "Connection failed (attempt {}): {}",
                     attempt, e
-                )));
+                ))) {
+                    warn!("Failed to send connection error: {}", err);
+                }
             }
             Err(_) => {
                 warn!("Connection timed out");
                 let attempt = reconnect_state.lock().attempt;
-                let _ = tx_for_network.send(ClientNetworkMessage::Error(format!(
+                if let Err(err) = tx_for_network.send(ClientNetworkMessage::Error(format!(
                     "Connection timed out (attempt {})",
                     attempt
-                )));
+                ))) {
+                    warn!("Failed to send timeout error: {}", err);
+                }
             }
         }
 
@@ -268,8 +274,12 @@ fn setup_network(mut commands: Commands, server_config: Res<ServerConfig>) {
                 Ok(result) => result,
                 Err(e) => {
                     error!("Failed to connect: {}", e);
-                    let _ = tx.send(ClientNetworkMessage::Disconnected);
-                    let _ = tx_for_reconnect.send(ClientNetworkMessage::Error(e));
+                    if let Err(err) = tx.send(ClientNetworkMessage::Disconnected) {
+                        warn!("Failed to send disconnected message: {}", err);
+                    }
+                    if let Err(err) = tx_for_reconnect.send(ClientNetworkMessage::Error(e)) {
+                        warn!("Failed to send error message: {}", err);
+                    }
                     {
                         let mut state = connection_state_clone.lock();
                         *state = ConnectionState::Disconnected;
@@ -295,10 +305,14 @@ fn setup_network(mut commands: Commands, server_config: Res<ServerConfig>) {
             .await
         {
             error!("Failed to send connect message: {}", e);
-            let _ = tx.send(ClientNetworkMessage::Error(
+            if let Err(err) = tx.send(ClientNetworkMessage::Error(
                 "Failed to send connect message".to_string(),
-            ));
-            let _ = tx.send(ClientNetworkMessage::Disconnected);
+            )) {
+                warn!("Failed to send error message: {}", err);
+            }
+            if let Err(err) = tx.send(ClientNetworkMessage::Disconnected) {
+                warn!("Failed to send disconnected message: {}", err);
+            }
             return;
         }
 
@@ -321,9 +335,14 @@ fn setup_network(mut commands: Commands, server_config: Res<ServerConfig>) {
                     Ok(Message::Text(text)) => {
                         if text.len() > MAX_MESSAGE_SIZE {
                             error!("Received message too large: {} bytes", text.len());
-                            let _ = tx_clone
-                                .send(ClientNetworkMessage::Error("Message too large".to_string()));
-                            let _ = tx_clone.send(ClientNetworkMessage::Disconnected);
+                            if let Err(e) = tx_clone
+                                .send(ClientNetworkMessage::Error("Message too large".to_string()))
+                            {
+                                warn!("Failed to send message size error: {}", e);
+                            }
+                            if let Err(e) = tx_clone.send(ClientNetworkMessage::Disconnected) {
+                                warn!("Failed to send disconnected: {}", e);
+                            }
                             break;
                         }
                         debug!("Received from server: {} bytes", text.len());
@@ -334,7 +353,9 @@ fn setup_network(mut commands: Commands, server_config: Res<ServerConfig>) {
                                     "type": "Pong",
                                     "timestamp": timestamp
                                 });
-                                let _ = ui_tx_for_pong.send(pong_msg.to_string());
+                                if let Err(e) = ui_tx_for_pong.send(pong_msg.to_string()) {
+                                    warn!("Failed to send pong to UI: {}", e);
+                                }
                             }
                             let client_msg = convert_message(server_msg);
                             let send_result = tx_clone.send(client_msg);
@@ -360,7 +381,9 @@ fn setup_network(mut commands: Commands, server_config: Res<ServerConfig>) {
         let write_tx_for_forward = write_tx.clone();
         let forward_task = tokio::spawn(async move {
             while let Ok(msg) = ui_rx_for_task.recv() {
-                let _ = write_tx_for_forward.send(msg).await;
+                if let Err(e) = write_tx_for_forward.send(msg).await {
+                    warn!("Failed to forward message to write task: {}", e);
+                }
             }
         });
 
@@ -375,8 +398,12 @@ fn setup_network(mut commands: Commands, server_config: Res<ServerConfig>) {
                 });
                 if let Err(e) = write_tx.send(ping_msg.to_string()).await {
                     error!("Failed to queue ping: {}", e);
-                    let _ = ping_tx.send(ClientNetworkMessage::Error("Ping failed".to_string()));
-                    let _ = ping_tx.send(ClientNetworkMessage::Disconnected);
+                    if let Err(err) = ping_tx.send(ClientNetworkMessage::Error("Ping failed".to_string())) {
+                        warn!("Failed to send ping error: {}", err);
+                    }
+                    if let Err(err) = ping_tx.send(ClientNetworkMessage::Disconnected) {
+                        warn!("Failed to send disconnected: {}", err);
+                    }
                     break;
                 }
             }
@@ -384,7 +411,9 @@ fn setup_network(mut commands: Commands, server_config: Res<ServerConfig>) {
 
         let _ = tokio::join!(read_task, write_task, forward_task, ping_task);
 
-        let _ = tx.send(ClientNetworkMessage::Disconnected);
+        if let Err(e) = tx.send(ClientNetworkMessage::Disconnected) {
+            debug!("Failed to send final disconnected message: {}", e);
+        }
         {
             let mut state = connection_state_clone.lock();
             *state = ConnectionState::Disconnected;
@@ -531,10 +560,12 @@ fn trigger_reconnection(network_res: &Res<NetworkResources>, _commands: &mut Com
                         let mut state = connection_state.lock();
                         *state = ConnectionState::Disconnected;
                     }
-                    let _ = tx_for_reconnect.send(ClientNetworkMessage::Error(format!(
+                    if let Err(err) = tx_for_reconnect.send(ClientNetworkMessage::Error(format!(
                         "Reconnection failed: {}",
                         e
-                    )));
+                    ))) {
+                        warn!("Failed to send reconnection error: {}", err);
+                    }
                     return;
                 }
             };
@@ -555,17 +586,23 @@ fn trigger_reconnection(network_res: &Res<NetworkResources>, _commands: &mut Com
             .await
         {
             error!("Failed to send connect message during reconnection: {}", e);
-            let _ = tx_for_reconnect.send(ClientNetworkMessage::Error(
+            if let Err(err) = tx_for_reconnect.send(ClientNetworkMessage::Error(
                 "Failed to send connect message".to_string(),
-            ));
-            let _ = tx_for_reconnect.send(ClientNetworkMessage::Disconnected);
+            )) {
+                warn!("Failed to send error: {}", err);
+            }
+            if let Err(err) = tx_for_reconnect.send(ClientNetworkMessage::Disconnected) {
+                warn!("Failed to send disconnected: {}", err);
+            }
             return;
         }
 
         let (write_tx, mut write_rx) = tokio::sync::mpsc::channel::<String>(100);
         let write_task = tokio::spawn(async move {
             while let Some(msg) = write_rx.recv().await {
-                let _ = write.send(Message::Text(msg.into())).await;
+                if let Err(e) = write.send(Message::Text(msg.into())).await {
+                    warn!("Failed to send message during reconnection: {}", e);
+                }
             }
         });
 
@@ -577,8 +614,11 @@ fn trigger_reconnection(network_res: &Res<NetworkResources>, _commands: &mut Com
                     Ok(Message::Text(text)) => {
                         if text.len() > MAX_MESSAGE_SIZE {
                             error!("Received message too large: {} bytes", text.len());
-                            let _ = tx_for_reconnect
-                                .send(ClientNetworkMessage::Error("Message too large".to_string()));
+                            if let Err(e) = tx_for_reconnect
+                                .send(ClientNetworkMessage::Error("Message too large".to_string()))
+                            {
+                                warn!("Failed to send message size error: {}", e);
+                            }
                             break;
                         }
                         if let Ok(server_msg) = crate::network::parse_message(&text) {
@@ -587,20 +627,30 @@ fn trigger_reconnection(network_res: &Res<NetworkResources>, _commands: &mut Com
                                     "type": "Pong",
                                     "timestamp": timestamp
                                 });
-                                let _ = ui_tx_clone.send(pong_msg.to_string());
+                                if let Err(e) = ui_tx_clone.send(pong_msg.to_string()) {
+                                    warn!("Failed to send pong during reconnection: {}", e);
+                                }
                             }
                             let client_msg = convert_message(server_msg);
-                            let _ = tx_for_reconnect.send(client_msg);
+                            if let Err(e) = tx_for_reconnect.send(client_msg) {
+                                warn!("Failed to send client message during reconnection: {}", e);
+                            }
                         }
                     }
                     Ok(Message::Close(_)) => {
-                        let _ = tx_for_reconnect.send(ClientNetworkMessage::Disconnected);
+                        if let Err(e) = tx_for_reconnect.send(ClientNetworkMessage::Disconnected) {
+                            warn!("Failed to send disconnected on close: {}", e);
+                        }
                         break;
                     }
                     Err(e) => {
                         error!("WebSocket error during reconnection: {}", e);
-                        let _ = tx_for_reconnect.send(ClientNetworkMessage::Error(e.to_string()));
-                        let _ = tx_for_reconnect.send(ClientNetworkMessage::Disconnected);
+                        if let Err(err) = tx_for_reconnect.send(ClientNetworkMessage::Error(e.to_string())) {
+                            warn!("Failed to send ws error: {}", err);
+                        }
+                        if let Err(err) = tx_for_reconnect.send(ClientNetworkMessage::Disconnected) {
+                            warn!("Failed to send disconnected on error: {}", err);
+                        }
                         break;
                     }
                     _ => {}
@@ -610,7 +660,9 @@ fn trigger_reconnection(network_res: &Res<NetworkResources>, _commands: &mut Com
 
         let _ = tokio::join!(read_task, write_task);
 
-        let _ = tx_for_reconnect.send(ClientNetworkMessage::Disconnected);
+        if let Err(e) = tx_for_reconnect.send(ClientNetworkMessage::Disconnected) {
+            debug!("Failed to send final disconnected during reconnection cleanup: {}", e);
+        }
         {
             let mut state = connection_state.lock();
             *state = ConnectionState::Disconnected;

@@ -390,6 +390,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let hmac_key = if config.enable_hmac_verification {
         Arc::new(HmacKey::new().unwrap_or_else(|_| HmacKey::default()))
     } else {
+        // Safe to unwrap: from_bytes with a zero-filled array of correct length always succeeds
+        // since it only validates the length, not the content of the key
         Arc::new(HmacKey::from_bytes(&[0u8; HMAC_SECRET_LEN]).unwrap())
     };
     let nonce_cache = Arc::new(NonceCache::new());

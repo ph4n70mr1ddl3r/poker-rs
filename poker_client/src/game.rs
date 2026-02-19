@@ -1,5 +1,6 @@
-use parking_lot::Mutex;
 use std::collections::{HashMap, VecDeque};
+
+use parking_lot::Mutex;
 
 pub use poker_protocol::{
     ActionRequiredUpdate, ChatMessage, GameStateUpdate, PlayerConnectedUpdate, PlayerUpdate,
