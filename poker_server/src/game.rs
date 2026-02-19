@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use log::{debug, error};
 use poker_protocol::{
     ActionRequiredUpdate, Card, GameStage, GameStateUpdate, HandEvaluation, HandRank, PlayerAction,
@@ -6,7 +8,6 @@ use poker_protocol::{
 };
 use rand::seq::SliceRandom;
 use rand::thread_rng;
-use std::collections::HashMap;
 use tokio::sync::broadcast;
 
 use crate::MAX_BET_MULTIPLIER;
@@ -46,6 +47,16 @@ impl PokerGame {
                 error!("Failed to broadcast message: {} (no active receivers)", e);
             }
         }
+    }
+
+    /// Returns the total number of players currently in the game.
+    pub fn player_count(&self) -> usize {
+        self.players.len()
+    }
+
+    /// Returns the number of active (not folded, not sitting out, has chips) players.
+    pub fn active_player_count(&self) -> usize {
+        self.get_active_player_ids().len()
     }
 
     /// Creates a new poker game instance.
@@ -881,52 +892,38 @@ impl PokerGame {
             .cloned()
             .collect();
 
-        if all_cards.is_empty() {
-            return HandEvaluation {
-                rank: HandRank::HighCard,
-                primary_rank: 0,
-                tiebreakers: vec![],
-                description: "No cards".to_string(),
-            };
+        // Handle edge cases: empty hand or less than 5 cards
+        match all_cards.len() {
+            0 => {
+                return HandEvaluation {
+                    rank: HandRank::HighCard,
+                    primary_rank: 0,
+                    tiebreakers: vec![],
+                    description: "No cards".to_string(),
+                };
+            }
+            1..=4 => {
+                let top_rank = all_cards.iter().map(|c| c.rank as i32).max().unwrap_or(0);
+                return HandEvaluation {
+                    rank: HandRank::HighCard,
+                    primary_rank: top_rank,
+                    tiebreakers: all_cards.iter().map(|c| c.rank as i32).collect(),
+                    description: format!("High Card ({} cards)", all_cards.len()),
+                };
+            }
+            _ => {}
         }
 
-        if all_cards.len() < 5 {
-            let top_rank = all_cards.iter().map(|c| c.rank as i32).max().unwrap_or(0);
-
-            return HandEvaluation {
-                rank: HandRank::HighCard,
-                primary_rank: top_rank,
-                tiebreakers: all_cards.iter().map(|c| c.rank as i32).collect(),
-                description: format!("High Card ({} cards)", all_cards.len()),
-            };
-        }
-
-        if let Some(eval) = self.check_straight_flush(&all_cards) {
-            return eval;
-        }
-        if let Some(eval) = self.check_four_of_a_kind(&all_cards) {
-            return eval;
-        }
-        if let Some(eval) = self.check_full_house(&all_cards) {
-            return eval;
-        }
-        if let Some(eval) = self.check_flush(&all_cards) {
-            return eval;
-        }
-        if let Some(eval) = self.check_straight(&all_cards) {
-            return eval;
-        }
-        if let Some(eval) = self.check_three_of_a_kind(&all_cards) {
-            return eval;
-        }
-        if let Some(eval) = self.check_two_pair(&all_cards) {
-            return eval;
-        }
-        if let Some(eval) = self.check_pair(&all_cards) {
-            return eval;
-        }
-
-        HandEvaluation::high_card(&all_cards)
+        // Check hands in descending order of rank
+        self.check_straight_flush(&all_cards)
+            .or_else(|| self.check_four_of_a_kind(&all_cards))
+            .or_else(|| self.check_full_house(&all_cards))
+            .or_else(|| self.check_flush(&all_cards))
+            .or_else(|| self.check_straight(&all_cards))
+            .or_else(|| self.check_three_of_a_kind(&all_cards))
+            .or_else(|| self.check_two_pair(&all_cards))
+            .or_else(|| self.check_pair(&all_cards))
+            .unwrap_or_else(|| HandEvaluation::high_card(&all_cards))
     }
 
     fn check_straight_flush(&self, cards: &[Card]) -> Option<HandEvaluation> {

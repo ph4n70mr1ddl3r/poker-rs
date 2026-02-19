@@ -1,12 +1,13 @@
+use std::env;
+use std::sync::mpsc;
+use std::sync::Arc;
+
 use bevy::prelude::*;
 use bevy_egui::{egui, EguiContexts, EguiPlugin};
 use futures::SinkExt;
 use futures::StreamExt;
 use log::{debug, error, info, warn};
 use parking_lot::Mutex;
-use std::env;
-use std::sync::mpsc;
-use std::sync::Arc;
 use tokio::runtime::Handle;
 use tokio::time::{timeout, Duration};
 use tokio_tungstenite::tungstenite::Message;

@@ -1,14 +1,14 @@
-use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};
 use std::fmt;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-mod errors;
-mod types;
-
 use parking_lot::Mutex;
 use ring::rand::SecureRandom;
+use serde::{Deserialize, Serialize};
+
+mod errors;
+mod types;
 
 pub use errors::{ConnectionError, ProtocolError, ServerError};
 pub use types::{Card, GameStage, HandEvaluation, HandRank, PlayerState, Rank, Street, Suit};
@@ -148,12 +148,11 @@ impl HmacKey {
 
 impl Default for HmacKey {
     fn default() -> Self {
-        let mut array = [0u8; HMAC_SECRET_LEN];
-        let rng = ring::rand::SystemRandom::new();
-        if rng.fill(&mut array).is_err() {
+        Self::new().unwrap_or_else(|_| {
+            let mut array = [0u8; HMAC_SECRET_LEN];
             let _ = getrandom::getrandom(&mut array);
-        }
-        Self(array)
+            Self(array)
+        })
     }
 }
 

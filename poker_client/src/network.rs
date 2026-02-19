@@ -1,3 +1,5 @@
+use std::fmt;
+
 use crate::game::{
     ActionRequiredUpdate, ChatMessage, GameStateUpdate, PlayerConnectedUpdate, PlayerUpdate,
     ShowdownUpdate,

@@ -4,8 +4,9 @@ use std::sync::Arc;
 use chrono::{DateTime, Utc};
 use log::{debug, error, warn};
 use parking_lot::Mutex;
-use poker_protocol::{ChatMessage, ClientMessage, PlayerUpdate, ServerMessage};
-use poker_protocol::{ServerError, ServerResult};
+use poker_protocol::{
+    ChatMessage, ClientMessage, PlayerUpdate, ServerError, ServerMessage, ServerResult,
+};
 use tokio::sync::broadcast;
 use tokio::sync::mpsc::Sender;
 use tokio::sync::Semaphore;
@@ -156,6 +157,28 @@ impl PokerServer {
         )));
         self.games.insert(game_id.clone(), game.clone());
         game
+    }
+
+    /// Gets a reference to a game by its ID.
+    ///
+    /// # Arguments
+    /// * `game_id` - The ID of the game to retrieve
+    ///
+    /// # Returns
+    /// `Some(Arc<Mutex<PokerGame>>)` if found, `None` otherwise
+    pub fn get_game(&self, game_id: &str) -> Option<Arc<Mutex<PokerGame>>> {
+        self.games.get(game_id).cloned()
+    }
+
+    /// Checks if a player is currently in a game.
+    ///
+    /// # Arguments
+    /// * `player_id` - The player to check
+    ///
+    /// # Returns
+    /// `true` if the player is seated in a game, `false` otherwise
+    pub fn is_player_in_game(&self, player_id: &str) -> bool {
+        self.player_sessions.contains_key(player_id)
     }
 
     /// Registers a new player with the server (without connecting).
@@ -564,7 +587,10 @@ impl PokerServer {
                 }
             };
             if let Err(e) = sender.send(message).await {
-                error!("Failed to send message to player {}: {}", player_id_owned, e);
+                error!(
+                    "Failed to send message to player {}: {}",
+                    player_id_owned, e
+                );
             }
             drop(permit);
         });

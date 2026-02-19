@@ -1,5 +1,6 @@
-use serde::{Deserialize, Serialize};
 use std::fmt;
+
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Suit {
@@ -38,23 +39,27 @@ pub enum Rank {
 }
 
 impl Rank {
+    /// Converts a u8 value to a Rank enum variant.
+    /// Valid values are 2-14 (Two through Ace).
     pub fn from_u8(value: u8) -> Option<Self> {
-        match value {
-            2 => Some(Rank::Two),
-            3 => Some(Rank::Three),
-            4 => Some(Rank::Four),
-            5 => Some(Rank::Five),
-            6 => Some(Rank::Six),
-            7 => Some(Rank::Seven),
-            8 => Some(Rank::Eight),
-            9 => Some(Rank::Nine),
-            10 => Some(Rank::Ten),
-            11 => Some(Rank::Jack),
-            12 => Some(Rank::Queen),
-            13 => Some(Rank::King),
-            14 => Some(Rank::Ace),
-            _ => None,
-        }
+        const RANKS: [Option<Rank>; 15] = [
+            None,              // 0
+            None,              // 1
+            Some(Rank::Two),   // 2
+            Some(Rank::Three), // 3
+            Some(Rank::Four),  // 4
+            Some(Rank::Five),  // 5
+            Some(Rank::Six),   // 6
+            Some(Rank::Seven), // 7
+            Some(Rank::Eight), // 8
+            Some(Rank::Nine),  // 9
+            Some(Rank::Ten),   // 10
+            Some(Rank::Jack),  // 11
+            Some(Rank::Queen), // 12
+            Some(Rank::King),  // 13
+            Some(Rank::Ace),   // 14
+        ];
+        RANKS.get(value as usize).copied().flatten()
     }
 }
 

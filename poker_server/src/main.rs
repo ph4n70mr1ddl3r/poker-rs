@@ -1,5 +1,7 @@
-mod game;
-mod server;
+use std::net::SocketAddr;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use std::time::Duration;
 
 use futures::stream::StreamExt;
 use futures::SinkExt;
@@ -7,16 +9,15 @@ use log::{debug, error, info, warn};
 use parking_lot::Mutex;
 use poker_protocol::{ClientMessage, HmacKey, NonceCache, ServerMessage, HMAC_SECRET_LEN};
 use rand::seq::SliceRandom;
-use std::net::SocketAddr;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
-use std::time::Duration;
 use tokio::net::TcpListener;
 use tokio::signal;
 use tokio::time::Instant;
 use tokio_tungstenite::accept_async;
 use tokio_tungstenite::tungstenite::Message;
 use uuid::Uuid;
+
+mod game;
+mod server;
 
 use crate::game::PokerGame;
 use crate::server::PokerServer;
@@ -140,6 +141,14 @@ impl ChatRateLimiter {
     }
 }
 
+/// Validates that an action amount is positive and within allowed limits.
+///
+/// # Arguments
+/// * `amount` - The amount to validate
+/// * `max_allowed` - The maximum allowed amount
+///
+/// # Returns
+/// `Ok(i32)` if valid, or `Err(String)` with error message
 fn validate_action_amount(amount: i64, max_allowed: i32) -> Result<i32, String> {
     if amount <= 0 {
         return Err("Action amount must be positive".to_string());
