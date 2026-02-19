@@ -44,6 +44,9 @@ pub enum ServerError {
     #[error("Player not found: {0}")]
     PlayerNotFound(String),
 
+    #[error("Player not connected: {0}")]
+    PlayerNotConnected(String),
+
     #[error("Game not found: {0}")]
     GameNotFound(String),
 

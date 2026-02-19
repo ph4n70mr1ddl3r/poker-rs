@@ -574,7 +574,7 @@ impl PokerServer {
         let sender = player
             .ws_sender
             .as_ref()
-            .ok_or_else(|| ServerError::PlayerNotFound(player_id.to_string()))?;
+            .ok_or_else(|| ServerError::PlayerNotConnected(player_id.to_string()))?;
 
         let sem = Arc::clone(&self.send_semaphore);
         let sender = sender.clone();

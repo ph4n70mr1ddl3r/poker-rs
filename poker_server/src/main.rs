@@ -1,7 +1,7 @@
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use futures::stream::StreamExt;
 use futures::SinkExt;
@@ -11,7 +11,6 @@ use poker_protocol::{ClientMessage, HmacKey, NonceCache, ServerMessage, HMAC_SEC
 use rand::seq::SliceRandom;
 use tokio::net::TcpListener;
 use tokio::signal;
-use tokio::time::Instant;
 use tokio_tungstenite::accept_async;
 use tokio_tungstenite::tungstenite::Message;
 use uuid::Uuid;
@@ -587,10 +586,15 @@ impl MessageHandler {
 
     fn send_error(&self, error: &str) {
         let error_msg = ServerMessage::Error(error.to_string());
-        if let Ok(json) = serde_json::to_string(&error_msg) {
-            let server = self.server.lock();
-            if let Err(e) = server.send_to_player(&self.player_id, json) {
-                warn!("Failed to send error to {}: {}", self.player_id, e);
+        match serde_json::to_string(&error_msg) {
+            Ok(json) => {
+                let server = self.server.lock();
+                if let Err(e) = server.send_to_player(&self.player_id, json) {
+                    warn!("Failed to send error to {}: {}", self.player_id, e);
+                }
+            }
+            Err(e) => {
+                error!("Failed to serialize error message: {}", e);
             }
         }
     }
