@@ -12,6 +12,7 @@ mod types;
 
 pub use errors::{ConnectionError, ProtocolError, ServerError};
 pub use types::{Card, GameStage, HandEvaluation, HandRank, PlayerState, Rank, Street, Suit};
+
 pub type ServerResult<T> = std::result::Result<T, ServerError>;
 
 pub const HMAC_SECRET_LEN: usize = 32;

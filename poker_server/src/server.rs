@@ -166,6 +166,7 @@ impl PokerServer {
     ///
     /// # Returns
     /// `Some(Arc<Mutex<PokerGame>>)` if found, `None` otherwise
+    #[allow(dead_code)]
     pub fn get_game(&self, game_id: &str) -> Option<Arc<Mutex<PokerGame>>> {
         self.games.get(game_id).cloned()
     }
@@ -177,6 +178,7 @@ impl PokerServer {
     ///
     /// # Returns
     /// `true` if the player is seated in a game, `false` otherwise
+    #[allow(dead_code)]
     pub fn is_player_in_game(&self, player_id: &str) -> bool {
         self.player_sessions.contains_key(player_id)
     }

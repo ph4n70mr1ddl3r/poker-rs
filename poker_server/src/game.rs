@@ -50,11 +50,13 @@ impl PokerGame {
     }
 
     /// Returns the total number of players currently in the game.
+    #[allow(dead_code)]
     pub fn player_count(&self) -> usize {
         self.players.len()
     }
 
     /// Returns the number of active (not folded, not sitting out, has chips) players.
+    #[allow(dead_code)]
     pub fn active_player_count(&self) -> usize {
         self.get_active_player_ids().len()
     }
