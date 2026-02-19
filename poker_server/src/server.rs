@@ -10,6 +10,7 @@ use tokio::sync::broadcast;
 use tokio::sync::mpsc::Sender;
 use tokio::sync::Semaphore;
 use tokio::time::{timeout, Duration};
+#[cfg(test)]
 use uuid::Uuid;
 
 use crate::game::PokerGame;
@@ -31,7 +32,7 @@ pub struct ServerPlayer {
     pub connected: bool,
     pub ws_sender: Option<Sender<String>>,
     pub seated: bool,
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub session_token: String,
     pub session_created_at: DateTime<Utc>,
 }
@@ -44,6 +45,7 @@ impl ServerPlayer {
             connected: false,
             ws_sender: None,
             seated: false,
+            #[cfg(test)]
             session_token: Uuid::new_v4().to_string(),
             session_created_at: Utc::now(),
         }
@@ -87,7 +89,7 @@ impl PokerServer {
     }
 
     /// Sets the session token expiry duration in hours.
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub fn set_session_expiry_hours(&mut self, hours: u64) {
         self.session_expiry_hours = hours;
     }
@@ -572,7 +574,7 @@ impl PokerServer {
 
     /// Verifies a player's session token.
     /// Used during reconnection to validate that player owns session.
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub fn verify_session(&self, player_id: &str, token: &str) -> bool {
         self.players
             .get(player_id)

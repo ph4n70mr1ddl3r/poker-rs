@@ -95,7 +95,7 @@ impl PokerGame {
     }
 
     /// Sets the maximum bet per hand.
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub fn set_max_bet_per_hand(&mut self, max_bet: i32) {
         self.max_bet_per_hand = max_bet.max(0);
     }
@@ -340,7 +340,7 @@ impl PokerGame {
             .unwrap_or(0)
     }
 
-    #[allow(dead_code)]
+    #[cfg(test)]
     fn get_player_to_act(&self) -> Option<&PlayerState> {
         let active_player_ids = self.get_active_player_ids();
         if active_player_ids.is_empty() {

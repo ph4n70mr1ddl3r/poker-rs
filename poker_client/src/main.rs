@@ -702,7 +702,7 @@ fn update_ui(
         let villain_pos = egui::pos2(table_center.x, villain_y);
 
         let mut villain_opt = None;
-        let hero_opt = None;
+        let mut hero_opt = None;
         for (id, player) in &app_state.game_state.players {
             if id == &app_state.game_state.my_id {
                 hero_opt = Some(player);

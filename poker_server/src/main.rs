@@ -275,7 +275,7 @@ impl ShutdownState {
         self.should_shutdown.load(Ordering::Relaxed)
     }
 
-    #[allow(dead_code)]
+    #[cfg(test)]
     fn request_shutdown(&self) {
         self.should_shutdown.store(true, Ordering::Relaxed);
     }
